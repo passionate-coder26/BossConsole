@@ -48,6 +48,12 @@ actual object UpdateSettings {
      */
     @Volatile
     actual var lastDismissedVersion: String? = null
+
+    /**
+     * Version string for the newest release notes viewed by the user.
+     */
+    @Volatile
+    actual var lastSeenReleaseVersion: String? = null
 }
 
 /**
@@ -59,6 +65,7 @@ data class UpdateSettingsData(
     val checkIntervalHours: Long = 6,
     val includePreReleases: Boolean = false,
     val lastDismissedVersion: String? = null,
+    val lastSeenReleaseVersion: String? = null,
 )
 
 /**
@@ -84,6 +91,8 @@ actual object UpdateSettingsManager {
         loadSettingsSync()
     }
 
+    actual fun ensureLoaded() = Unit
+
     /**
      * Load settings from disk synchronously
      * Called during initialization to restore user preferences
@@ -99,6 +108,7 @@ actual object UpdateSettingsManager {
                 UpdateSettings.checkIntervalHours = settings.checkIntervalHours
                 UpdateSettings.includePreReleases = settings.includePreReleases
                 UpdateSettings.lastDismissedVersion = settings.lastDismissedVersion
+                UpdateSettings.lastSeenReleaseVersion = settings.lastSeenReleaseVersion
 
                 logger.debug(
                     LogCategory.SYSTEM,
@@ -130,6 +140,7 @@ actual object UpdateSettingsManager {
                         checkIntervalHours = UpdateSettings.checkIntervalHours,
                         includePreReleases = UpdateSettings.includePreReleases,
                         lastDismissedVersion = UpdateSettings.lastDismissedVersion,
+                        lastSeenReleaseVersion = UpdateSettings.lastSeenReleaseVersion,
                     )
 
                 val content = json.encodeToString(UpdateSettingsData.serializer(), settings)

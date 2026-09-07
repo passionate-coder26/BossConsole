@@ -852,9 +852,14 @@ fun main(args: Array<String>) {
     startupScope.launch {
         ai.rever.boss.updater.AppUpdateRealtimeService.instance.apply {
             onReleaseChanged = {
-                // App-level trigger through the app-level owner.
-                ai.rever.boss.updater.UpdateCoordinator.instance
-                    .checkForUpdatesInBackground()
+                val updateCoordinator =
+                    ai.rever.boss.updater.UpdateCoordinator.instance
+
+                // Preserve the existing update notification behavior.
+                updateCoordinator.checkForUpdatesInBackground()
+
+                // Refresh the same cached list used by Settings and the Dashboard.
+                updateCoordinator.versionListManager.fetchVersions(forceRefresh = true)
             }
             start()
         }
