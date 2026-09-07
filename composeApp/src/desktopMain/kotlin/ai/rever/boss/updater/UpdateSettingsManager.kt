@@ -4,6 +4,8 @@ import ai.rever.boss.plugin.pathutils.BossDirectories
 import ai.rever.boss.utils.logging.BossLogger
 import ai.rever.boss.utils.logging.LogCategory
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 import kotlinx.serialization.json.Json
@@ -76,6 +78,9 @@ data class UpdateSettingsData(
  */
 actual object UpdateSettingsManager {
     private val logger = BossLogger.forComponent("UpdateSettingsManager")
+
+    // Serialize snapshot-and-write operations so concurrent saves cannot persist stale settings.
+    private val settingsWriteMutex = Mutex()
     private val settingsFile = BossDirectories.resolve("update-settings.json")
     private val json =
         Json {
@@ -133,22 +138,28 @@ actual object UpdateSettingsManager {
      */
     actual suspend fun saveSettings() =
         withContext(Dispatchers.IO) {
-            try {
-                val settings =
-                    UpdateSettingsData(
-                        autoCheckEnabled = UpdateSettings.autoCheckEnabled,
-                        checkIntervalHours = UpdateSettings.checkIntervalHours,
-                        includePreReleases = UpdateSettings.includePreReleases,
-                        lastDismissedVersion = UpdateSettings.lastDismissedVersion,
-                        lastSeenReleaseVersion = UpdateSettings.lastSeenReleaseVersion,
+            settingsWriteMutex.withLock {
+                try {
+                    val settings =
+                        UpdateSettingsData(
+                            autoCheckEnabled = UpdateSettings.autoCheckEnabled,
+                            checkIntervalHours = UpdateSettings.checkIntervalHours,
+                            includePreReleases = UpdateSettings.includePreReleases,
+                            lastDismissedVersion = UpdateSettings.lastDismissedVersion,
+                            lastSeenReleaseVersion = UpdateSettings.lastSeenReleaseVersion,
+                        )
+
+                    val content = json.encodeToString(UpdateSettingsData.serializer(), settings)
+                    settingsFile.writeText(content)
+
+                    logger.debug(
+                        LogCategory.SYSTEM,
+                        "Saved update settings",
+                        mapOf("path" to settingsFile.absolutePath),
                     )
-
-                val content = json.encodeToString(UpdateSettingsData.serializer(), settings)
-                settingsFile.writeText(content)
-
-                logger.debug(LogCategory.SYSTEM, "Saved update settings", mapOf("path" to settingsFile.absolutePath))
-            } catch (e: Exception) {
-                logger.warn(LogCategory.SYSTEM, "Failed to save update settings", error = e)
+                } catch (e: Exception) {
+                    logger.warn(LogCategory.SYSTEM, "Failed to save update settings", error = e)
+                }
             }
         }
 }
