@@ -10,6 +10,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotEquals
 import kotlin.test.assertSame
+import kotlin.test.assertTrue
 
 class PluginProcessIdTest {
     private class LiveProcess(
@@ -52,8 +53,8 @@ class PluginProcessIdTest {
         val firstWindow = pluginProcessId("window-a", "example-plugin")
         val secondWindow = pluginProcessId("window-b", "example-plugin")
 
-        assertEquals("plugin-window-a-example-plugin", firstWindow)
-        assertEquals("plugin-window-b-example-plugin", secondWindow)
+        assertTrue(firstWindow.matches(Regex("plugin-[a-f0-9]{32}")))
+        assertTrue(secondWindow.matches(Regex("plugin-[a-f0-9]{32}")))
         assertNotEquals(firstWindow, secondWindow)
     }
 
@@ -71,6 +72,18 @@ class PluginProcessIdTest {
         assertEquals(2, registry.size)
         assertSame(firstProcess, registry.getProcess(firstId))
         assertSame(secondProcess, registry.getProcess(secondId))
+    }
+
+    @Test
+    fun `long manifest and window ids fit a typical Unix socket path`() {
+        val id =
+            pluginProcessId(
+                "123e4567-e89b-12d3-a456-426614174000",
+                "ai.rever.boss.plugin.dynamic.averylongpluginname",
+            )
+        val socketPath = "/Users/developer/.boss_debug/ipc/boss-plugin-$id.sock"
+        assertTrue(socketPath.toByteArray(Charsets.UTF_8).size < 104)
+        assertNotEquals(pluginProcessId("a-b", "c"), pluginProcessId("a", "b-c"))
     }
 
     @Test

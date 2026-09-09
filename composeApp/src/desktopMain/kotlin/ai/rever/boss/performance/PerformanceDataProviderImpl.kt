@@ -169,6 +169,7 @@ class PerformanceDataProviderImpl : PerformanceDataProvider {
         return try {
             val current = ProcessHandle.current()
             val descendants = current.descendants().toList()
+            val registered = collectViaKernelRegistry().associateBy { it.pid }
             val now = Instant.now()
 
             // Batch query RSS and thread counts for all PIDs via ps
@@ -195,9 +196,10 @@ class PerformanceDataProviderImpl : PerformanceDataProvider {
                     // Extract plugin ID from classpath: ...boss-plugin-{name}-{version}.jar
                     val pluginJarRegex = Regex("""boss-plugin-([a-z\-]+)-\d+""")
                     val match = pluginJarRegex.find(cmdLine)
-                    val pluginId = match?.groupValues?.get(1) ?: "unknown-${handle.pid()}"
+                    val known = registered[handle.pid()]
+                    val pluginId = known?.pluginId ?: match?.groupValues?.get(1) ?: "unknown-${handle.pid()}"
                     val displayName =
-                        pluginId.split("-").joinToString(" ") { part ->
+                        known?.displayName ?: pluginId.split("-").joinToString(" ") { part ->
                             part.replaceFirstChar { it.uppercase() }
                         }
 
@@ -218,7 +220,7 @@ class PerformanceDataProviderImpl : PerformanceDataProvider {
                     val configuredHeapMb = PerformanceSettingsManager.currentSettings.value.pluginJvmHeapMb
 
                     ChildProcessData(
-                        processId = "plugin-$pluginId",
+                        processId = known?.processId ?: "plugin-process-${handle.pid()}",
                         pluginId = pluginId,
                         displayName = displayName,
                         pid = handle.pid(),
@@ -353,6 +355,8 @@ class PerformanceDataProviderImpl : PerformanceDataProvider {
 
                     val processId = configCls.getMethod("getProcessId").invoke(config) as String
                     val displayName = configCls.getMethod("getDisplayName").invoke(config) as String
+                    val environment = configCls.getMethod("getEnvironment").invoke(config) as? Map<*, *>
+                    val pluginId = pluginIdFromProcessMetadata(processId, environment)
                     val pid =
                         try {
                             processCls.getMethod("getPid").invoke(process) as Long
@@ -368,7 +372,7 @@ class PerformanceDataProviderImpl : PerformanceDataProvider {
 
                     ChildProcessData(
                         processId = processId,
-                        pluginId = processId.removePrefix("plugin-"),
+                        pluginId = pluginId,
                         displayName = displayName,
                         pid = pid,
                         state = if (isAlive) "RUNNING" else "STOPPED",
@@ -405,3 +409,9 @@ class PerformanceDataProviderImpl : PerformanceDataProvider {
             pluginJvmInitialHeapMb = pluginJvmInitialHeapMb,
         )
 }
+
+/** Process identity is opaque; plugin identity comes from spawn metadata. */
+internal fun pluginIdFromProcessMetadata(
+    processId: String,
+    environment: Map<*, *>?,
+): String = environment?.get("BOSS_PLUGIN_ID") as? String ?: processId.removePrefix("plugin-")
