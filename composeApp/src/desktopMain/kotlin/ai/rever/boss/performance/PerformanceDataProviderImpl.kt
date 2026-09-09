@@ -154,7 +154,8 @@ class PerformanceDataProviderImpl : PerformanceDataProvider {
             return cachedChildProcesses.map { it.copy(uptimeMs = it.uptimeMs + (now - childProcessCacheTime)) }
         }
 
-        val result = collectViaProcessHandle().ifEmpty { collectViaKernelRegistry() }
+        val registered = collectViaKernelRegistry()
+        val result = collectViaProcessHandle(registered).ifEmpty { registered }
         cachedChildProcesses = result
         childProcessCacheTime = now
         return result
@@ -165,33 +166,27 @@ class PerformanceDataProviderImpl : PerformanceDataProvider {
      * Searches all descendants of the current process for PluginProcessMainKt.
      * Enriches with uptime from startInstant() and RSS memory from OS query.
      */
-    private fun collectViaProcessHandle(): List<ChildProcessData> {
-        return try {
+    private fun collectViaProcessHandle(registeredProcesses: List<ChildProcessData>): List<ChildProcessData> =
+        try {
             val current = ProcessHandle.current()
-            val descendants = current.descendants().toList()
-            val registered = collectViaKernelRegistry().associateBy { it.pid }
+            val descendants =
+                current.descendants().toList().filter {
+                    it
+                        .info()
+                        .commandLine()
+                        .orElse("")
+                        .contains("PluginProcessMainKt")
+                }
+            val registered = registeredProcesses.associateBy { it.pid }
             val now = Instant.now()
 
             // Batch query RSS and thread counts for all PIDs via ps
-            val pids =
-                descendants.mapNotNull { h ->
-                    if (h
-                            .info()
-                            .commandLine()
-                            .orElse("")
-                            .contains("PluginProcessMainKt")
-                    ) {
-                        h.pid()
-                    } else {
-                        null
-                    }
-                }
+            val pids = descendants.map { it.pid() }
             val processMetrics = if (pids.isNotEmpty()) queryProcessMetrics(pids) else emptyMap()
 
             descendants.mapNotNull { handle ->
                 try {
                     val cmdLine = handle.info().commandLine().orElse("")
-                    if (!cmdLine.contains("PluginProcessMainKt")) return@mapNotNull null
 
                     // Extract plugin ID from classpath: ...boss-plugin-{name}-{version}.jar
                     val pluginJarRegex = Regex("""boss-plugin-([a-z\-]+)-\d+""")
@@ -239,7 +234,6 @@ class PerformanceDataProviderImpl : PerformanceDataProvider {
             logger.warn("ProcessHandle approach failed: {}", e.message)
             emptyList()
         }
-    }
 
     private data class OsProcessMetrics(
         val rssBytes: Long,
@@ -355,7 +349,7 @@ class PerformanceDataProviderImpl : PerformanceDataProvider {
 
                     val processId = configCls.getMethod("getProcessId").invoke(config) as String
                     val displayName = configCls.getMethod("getDisplayName").invoke(config) as String
-                    val environment = configCls.getMethod("getEnvironment").invoke(config) as? Map<*, *>
+                    val environment = processEnvironmentOrNull(config)
                     val pluginId = pluginIdFromProcessMetadata(processId, environment)
                     val pid =
                         try {
@@ -414,4 +408,10 @@ class PerformanceDataProviderImpl : PerformanceDataProvider {
 internal fun pluginIdFromProcessMetadata(
     processId: String,
     environment: Map<*, *>?,
-): String = environment?.get("BOSS_PLUGIN_ID") as? String ?: processId.removePrefix("plugin-")
+): String =
+    (environment?.get("BOSS_PLUGIN_ID") as? String)?.takeIf { it.isNotBlank() }
+        ?: processId.removePrefix("plugin-")
+
+/** Optional metadata must never hide the entire process when a reflected getter is unavailable. */
+internal fun processEnvironmentOrNull(config: Any): Map<*, *>? =
+    runCatching { config.javaClass.getMethod("getEnvironment").invoke(config) as? Map<*, *> }.getOrNull()

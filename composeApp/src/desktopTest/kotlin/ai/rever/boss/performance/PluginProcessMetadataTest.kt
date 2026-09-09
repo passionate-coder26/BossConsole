@@ -19,4 +19,10 @@ class PluginProcessMetadataTest {
     fun `legacy processes without metadata retain their plugin name`() {
         assertEquals("example-plugin", pluginIdFromProcessMetadata("plugin-example-plugin", emptyMap<String, String>()))
     }
+
+    @Test
+    fun `missing optional environment preserves legacy identity`() {
+        assertEquals("notes", pluginIdFromProcessMetadata("plugin-notes", processEnvironmentOrNull(Any())))
+        assertEquals("notes", pluginIdFromProcessMetadata("plugin-notes", mapOf("BOSS_PLUGIN_ID" to " ")))
+    }
 }

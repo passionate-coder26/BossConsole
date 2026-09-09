@@ -160,8 +160,10 @@ class OutOfProcessPluginSpawnerImpl(
                     )
 
                 logger.info(
-                    "Spawning out-of-process plugin: id={}, jar={}, runtime={}",
+                    "Spawning out-of-process plugin: id={}, processId={}, windowId={}, jar={}, runtime={}",
                     pluginId,
+                    config.processId,
+                    windowId,
                     jarPath,
                     runtimeClasspath,
                 )
