@@ -1087,6 +1087,8 @@ kotlin {
                 "**/plugin/IpcCompatibilityTest.kt",
                 "**/plugin/PluginStoreSetupIpcGateTest.kt",
                 "**/plugin/PluginStateDeltaTest.kt",
+                // Its process registry and production ID helper belong to the excluded OOP runtime.
+                "**/plugin/PluginProcessIdTest.kt",
             )
         }
     }
