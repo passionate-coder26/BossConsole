@@ -143,7 +143,7 @@ class OutOfProcessPluginSpawnerImpl(
 
                 val config =
                     ProcessConfig(
-                        processId = processIdOf(pluginId),
+                        processId = pluginProcessId(windowId, pluginId),
                         processType = ProcessType.PLUGIN,
                         displayName = manifest.displayName,
                         mainClass = "ai.rever.boss.plugin.runtime.PluginProcessMainKt",
@@ -186,7 +186,7 @@ class OutOfProcessPluginSpawnerImpl(
                 val bridge =
                     PluginStateBridge(
                         pluginId = pluginId,
-                        instanceId = "plugin-$pluginId",
+                        instanceId = config.processId,
                         channel = channel,
                     )
                 bridge.start()
@@ -228,7 +228,7 @@ class OutOfProcessPluginSpawnerImpl(
         // is the only thing that would let a host exit reap it.
         val process = managedProcesses.remove(pluginId)
         runCatching { process?.destroyForcibly() }
-        process?.let { kernelRegistry()?.unregisterIfSame(processIdOf(pluginId), it) }
+        process?.let { kernelRegistry()?.unregisterIfSame(pluginProcessId(windowId, pluginId), it) }
     }
 
     override suspend fun terminate(pluginId: String): Result<Unit> =
@@ -273,7 +273,7 @@ class OutOfProcessPluginSpawnerImpl(
                 // implies reapable" has to hold for as long as the child is alive, so a host exit
                 // part-way through an unload still reaps it; and removing by id alone could evict
                 // a replacement that a concurrent respawn had already registered.
-                process?.let { kernelRegistry()?.unregisterIfSame(processIdOf(pluginId), it) }
+                process?.let { kernelRegistry()?.unregisterIfSame(pluginProcessId(windowId, pluginId), it) }
             }
         }
 
@@ -329,7 +329,7 @@ class OutOfProcessPluginSpawnerImpl(
         timeoutMs: Long,
     ) {
         withTimeout(timeoutMs) {
-            val processId = processIdOf(pluginId)
+            val processId = pluginProcessId(windowId, pluginId)
             val registry = kernelRegistry()
 
             while (true) {
@@ -376,17 +376,21 @@ class OutOfProcessPluginSpawnerImpl(
 }
 
 /**
- * Kernel-side process id for a plugin. The kernel registry is keyed by it.
+ * Kernel-side process ID for a plugin.
  *
- * **Not window-scoped.** This spawner is per-window but the registry is process-wide, so two windows
- * running the same out-of-process plugin produce the same id and the second registration evicts the
- * first while its child is still alive - leaving that child unreapable on host exit. `terminate()` is
- * unaffected (each spawner keeps its own [managedProcesses]), so this only bites at exit.
- * [ProcessRegistry.register] logs a warning when it evicts a live handle, which is how this shows up.
- * Putting the window id in here is the real fix and needs the child side to agree, since the runtime
- * reports state under the process id it was given.
+ * The registry is process-wide, so window-owned spawners include [windowId]. This prevents the
+ * same plugin in two windows from evicting the other live process. An empty window ID preserves
+ * the legacy identity for non-window and test contexts.
  */
-private fun processIdOf(pluginId: String): String = "plugin-$pluginId"
+internal fun pluginProcessId(
+    windowId: String,
+    pluginId: String,
+): String =
+    if (windowId.isBlank()) {
+        "plugin-$pluginId"
+    } else {
+        "plugin-$windowId-$pluginId"
+    }
 
 /**
  * The kernel's process registry, or null when the kernel is not up.
