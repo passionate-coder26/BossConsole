@@ -102,6 +102,7 @@ interface UpdateHandle {
  * This mirrors the shape the Rust port settled on (`UpdateCoordinator` owns
  * `shutdown`, windows hold an `UpdateHandle` that does not).
  */
+// App-wide actions and window capabilities deliberately share this single lifecycle owner.
 @Suppress("TooManyFunctions")
 class UpdateCoordinator internal constructor(
     internal val manager: UpdateManager,
@@ -269,6 +270,8 @@ class UpdateCoordinator internal constructor(
         manager.launchInBackground { manager.installUpdate(downloadPath) }
     }
 
+    // Advisory badge state: process shutdown may cancel a pending disk write, so opening notes
+    // immediately before quitting can show NEW again. It never changes install/dismiss state.
     internal fun markReleaseSeenInBackground(version: Version) {
         if (isShutDown) return
 

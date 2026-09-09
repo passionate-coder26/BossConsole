@@ -7,6 +7,7 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.time.Duration.Companion.hours
 
 /**
@@ -25,6 +26,8 @@ class VersionListManager internal constructor(
     constructor(updateService: UpdateService) : this(updateService::fetchAllReleases)
 
     private val fetchMutex = Mutex()
+    private val fetchGeneration = AtomicLong()
+    private var successfulGeneration = 0L
     private val logger = BossLogger.forComponent("VersionListManager")
     private val _versions = MutableStateFlow<List<VersionInfo>>(emptyList())
     val versions: StateFlow<List<VersionInfo>> = _versions
@@ -42,8 +45,12 @@ class VersionListManager internal constructor(
      * Fetches all available versions from GitHub Releases.
      * Uses cached data if available and not expired.
      */
-    suspend fun fetchVersions(forceRefresh: Boolean = false) =
+    suspend fun fetchVersions(forceRefresh: Boolean = false) {
+        val requestedGeneration = fetchGeneration.get()
         fetchMutex.withLock {
+            // Only a successful fetch STARTED after this request can satisfy its invalidation.
+            // Generations avoid wall-clock jumps and coalesce events waiting on the same fetch.
+            if (forceRefresh && successfulGeneration > requestedGeneration) return@withLock
             // A realtime refresh must wait for an older fetch, not disappear behind it.
             // Ordinary callers recheck the cache after waiting and reuse that result.
 
@@ -60,6 +67,7 @@ class VersionListManager internal constructor(
                 return@withLock // Use cached data
             }
 
+            val generation = fetchGeneration.incrementAndGet()
             _isLoading.value = true
             _error.value = null
 
@@ -71,6 +79,7 @@ class VersionListManager internal constructor(
 
                 _versions.value = allVersions
                 lastFetchTime = now
+                successfulGeneration = generation
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -80,6 +89,7 @@ class VersionListManager internal constructor(
                 _isLoading.value = false
             }
         }
+    }
 
     /**
      * Searches versions by version number.

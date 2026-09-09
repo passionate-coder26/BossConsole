@@ -95,6 +95,9 @@ actual object UpdateSettingsManager {
         loadSettingsSync()
     }
 
+    // Accessing this JVM object runs init/loadSettingsSync exactly once before this method.
+    // Keep this explicit initialization barrier: the coordinator must snapshot the persisted
+    // marker, not UpdateSettings defaults. Re-running the load here would overwrite live edits.
     actual fun ensureLoaded() = Unit
 
     /**

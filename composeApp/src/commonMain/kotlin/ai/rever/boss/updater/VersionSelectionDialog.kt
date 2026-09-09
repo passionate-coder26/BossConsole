@@ -170,7 +170,7 @@ fun VersionSelectionDialog(
                 }
 
                 // Version list
-                if (isLoading) {
+                if (isLoading && versions.isEmpty()) {
                     Box(
                         modifier =
                             Modifier

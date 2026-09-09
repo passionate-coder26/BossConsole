@@ -47,6 +47,34 @@ class VersionListManagerTest {
         }
 
     @Test
+    fun `realtime burst waiting on an older fetch shares one follow up`() =
+        runBlocking {
+            val started = CompletableDeferred<Unit>()
+            val finish = CompletableDeferred<Unit>()
+            var calls = 0
+            val manager =
+                VersionListManager {
+                    calls++
+                    if (calls == 1) {
+                        started.complete(Unit)
+                        finish.await()
+                    }
+                    listOf(release(calls))
+                }
+            val initial = launch { manager.fetchVersions() }
+            started.await()
+            val refreshes =
+                List(10) {
+                    launch(start = CoroutineStart.UNDISPATCHED) { manager.fetchVersions(forceRefresh = true) }
+                }
+            finish.complete(Unit)
+            initial.join()
+            refreshes.forEach { it.join() }
+            assertEquals(2, calls)
+            assertEquals(listOf(release(2)), manager.versions.value)
+        }
+
+    @Test
     fun `dashboard and settings share the result of an in flight fetch`() =
         runBlocking {
             val started = CompletableDeferred<Unit>()
