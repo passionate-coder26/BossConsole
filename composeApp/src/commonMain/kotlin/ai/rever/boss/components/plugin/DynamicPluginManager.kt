@@ -96,6 +96,11 @@ interface OutOfProcessPluginSpawner {
      * Terminate the child process for the given plugin.
      */
     suspend fun terminate(pluginId: String): Result<Unit>
+
+    /**
+     * Stop background supervision owned by this spawner.
+     */
+    fun dispose() = Unit
 }
 
 /**
@@ -2343,6 +2348,9 @@ class DynamicPluginManager(
                 "scope" to if (closeTabsAcrossWindows) "global" else "window",
             ),
         )
+
+        // Stop OOP supervision before teardown starts so a crash cannot race shutdown.
+        outOfProcessSpawner?.dispose()
 
         // Uninstall all plugins
         for (pluginId in _pluginStates.value.keys.toList()) {
