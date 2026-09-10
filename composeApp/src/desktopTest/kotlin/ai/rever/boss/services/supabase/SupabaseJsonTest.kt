@@ -1,6 +1,8 @@
 package ai.rever.boss.services.supabase
 
+import ai.rever.boss.services.auth.authFailure
 import ai.rever.boss.services.supabase.models.SecretEntry
+import io.ktor.http.HttpStatusCode
 import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
 import kotlin.test.Test
@@ -25,6 +27,16 @@ class SupabaseJsonTest {
     /** Truncated mid-array, as a cut connection or a proxy error would leave it. */
     private val malformedBody =
         """[{"id":"1","website":"github.com","password":"$password","recovery_codes":["$recoveryCode"] """
+
+    @Test
+    fun `RestException server text and response headers never survive sanitization`() {
+        val raw = authFailure(HttpStatusCode.BadRequest, "private-error-value", "private-server-value")
+        assertTrue(raw.message.orEmpty().contains("private-server-value"))
+        val safe = sanitizeSupabaseFailure("getSecretShares", raw)
+        assertEquals("getSecretShares: Supabase request failed (HTTP 400)", safe.message)
+        assertNull(safe.cause)
+        assertFalse(safe.stackTraceToString().contains("private-"))
+    }
 
     @Test
     fun `a malformed body is not quoted back through the sanitiser`() {
@@ -84,8 +96,7 @@ class SupabaseJsonTest {
 
     @Test
     fun `a non-serialization failure passes through untouched`() {
-        // Network and auth failures are not ours to rewrite, and losing their type would
-        // break any caller that distinguishes them.
+        // Unrelated failures preserve their type; REST failures are sanitized separately.
         val original = IllegalStateException("connection reset")
 
         val result = sanitizeSupabaseFailure("getUserSecrets", original)

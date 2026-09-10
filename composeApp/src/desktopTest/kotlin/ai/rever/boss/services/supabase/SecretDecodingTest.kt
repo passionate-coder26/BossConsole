@@ -162,9 +162,8 @@ class SecretDecodingTest {
     @Test
     fun `get_secret_shares decodes when shared_by_email is null`() {
         // shared_by_email comes from `LEFT JOIN auth.users sb ON sb.id = ss.shared_by`, and
-        // auth.users.email is nullable. Modelled non-null it would throw for the whole array
-        // - the same "no shares on every secret" outage, through a door leniency does not
-        // cover: ignoreUnknownKeys handles extra keys, never a null where a value is required.
+        // auth.users.email is nullable. Preserve unknown identity as null: unknown-key
+        // leniency cannot fix it, and coercion to an invented default would lose that meaning.
         val payload =
             buildJsonArray {
                 add(
@@ -182,10 +181,7 @@ class SecretDecodingTest {
         val shares = supabaseJson.decodeFromJsonElement<List<SecretShareEntry>>(payload)
 
         assertEquals(1, shares.size)
-        // assertNull, not assertEquals(null, ...): it takes Any? and so still COMPILES if the
-        // field is made non-nullable again, letting the decode throw and fail the test for the
-        // real reason. assertEquals(null, ...) fails type inference instead, which reads as a
-        // broken test and invites fixing the test rather than the model.
+        // assertNull also catches a non-null default: coercion must preserve unknown identity.
         assertNull(shares[0].sharedByEmail)
     }
 

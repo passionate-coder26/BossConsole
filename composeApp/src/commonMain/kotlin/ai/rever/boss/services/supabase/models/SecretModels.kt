@@ -33,7 +33,7 @@ data class SecretMetadata(
     @SerialName("twofa_type")
     val twofaType: String? = null, // 'app', 'sms', 'email', 'hardware'
     @SerialName("twofa_secret")
-    val twofaSecret: String? = null, // Encrypted 2FA secret (for TOTP apps)
+    val twofaSecret: String? = null, // Plaintext TOTP seed returned by the authorized RPC; encrypted in storage
     @SerialName("recovery_codes")
     val recoveryCodes: List<String> = emptyList(),
 )
@@ -186,12 +186,8 @@ data class SecretShareEntry(
     val sharedWithRoleName: String? = null,
     @SerialName("access_level")
     val accessLevel: String,
-    // Nullable because get_secret_shares derives it from
-    // `LEFT JOIN auth.users sb ON sb.id = ss.shared_by`, and auth.users.email is itself
-    // nullable. A single null in a non-nullable slot throws for the WHOLE array - and
-    // ignoreUnknownKeys does not help, since leniency covers extra keys, never a null
-    // where a value is required. That failure looks exactly like the outage this model
-    // was just fixed for: "no shares" on every secret.
+    // LEFT JOIN auth.users can yield a null email. Preserve unknown identity as null;
+    // coercing it to an invented non-null default would lose that meaning.
     @SerialName("shared_by_email")
     val sharedByEmail: String? = null,
     @SerialName("created_at")

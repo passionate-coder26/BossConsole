@@ -505,11 +505,16 @@ installed build at once. Note the wildcard `kotlinx.serialization.json.*` import
 files keeps `Json.Default` in scope, so the broken thing is what you get by not thinking
 about it.
 
-Leniency covers extra keys and nothing else. A null in a non-nullable slot still throws
-for the whole list, so **declare every projected column `T? = null`** except the key. Unlike
-the other two rules here, this one is **convention, upheld by review** - no test enforces it,
-and the existing models do not all follow it yet (they are safe only because the columns
-behind them are `NOT NULL` today).
+The decoder ignores extra keys and coerces nulls/unknown enums only for properties with
+defaults. This can hide genuine server bugs; required properties without defaults still
+fail. Continue to **declare every projected column `T? = null`** except the key; this
+model convention is upheld by review, and not all existing models follow it yet.
+
+Only the unpaginated `getSecretShares` list recovers individual malformed rows. It logs
+counts without payloads and fails if a nonempty response has no decodable rows. Paginated
+secret lists stay atomic because the pinned plugin API has no raw next-offset field and
+clients advance by returned `data.size`. Role/permission lists also stay atomic because
+authorization must distinguish an incomplete response from a valid denial.
 
 **Log `sanitizeSupabaseFailure(op, e)`, never the raw exception.** kotlinx appends the
 whole offending document to a malformed-input error, and these bodies carry passwords the
