@@ -1507,11 +1507,18 @@ class DynamicPluginManager(
                     sandboxManager.removeSandbox(pluginId)
                 }
 
-                // Terminate out-of-process child if applicable
+                // Terminate the out-of-process child before unloading its plugin.
                 if (manifest.isolationMode == "out-of-process") {
-                    managerScope.launch {
-                        outOfProcessSpawner?.terminate(pluginId)
-                    }
+                    outOfProcessSpawner
+                        ?.terminate(pluginId)
+                        ?.onFailure { error ->
+                            logger.warn(
+                                LogCategory.SYSTEM,
+                                "Failed to terminate out-of-process plugin",
+                                mapOf("pluginId" to pluginId),
+                                error = error,
+                            )
+                        }
                 }
 
                 // Unload the plugin
