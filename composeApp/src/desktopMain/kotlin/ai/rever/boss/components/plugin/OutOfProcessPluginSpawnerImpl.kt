@@ -23,6 +23,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.withTimeoutOrNull
 import org.slf4j.LoggerFactory
 import java.io.File
 import java.security.MessageDigest
@@ -326,10 +327,20 @@ class OutOfProcessPluginSpawnerImpl(
                     logger.info("Terminating plugin process: id={}, pid={}", pluginId, process.pid)
                     process.destroy()
 
-                    withTimeout(5_000) {
-                        while (process.isAlive) {
-                            delay(100)
+                    // A child that outlives the grace window is the normal exit of this
+                    // wait, not an error: force-kill it and succeed, matching dev's
+                    // pre-cancellation behaviour. withTimeout would surface the same
+                    // outcome as TimeoutCancellationException, a CancellationException
+                    // that callers and the health loop treat as caller cancellation.
+                    val exited =
+                        withTimeoutOrNull(5_000) {
+                            while (process.isAlive) {
+                                delay(100)
+                            }
                         }
+                    if (exited == null) {
+                        logger.warn("Plugin process outlived the 5s destroy grace, forcing: id={}", pluginId)
+                        process.destroyForcibly()
                     }
                 } else {
                     logger.warn("No managed process found for plugin: {}", pluginId)
@@ -344,6 +355,10 @@ class OutOfProcessPluginSpawnerImpl(
                 logger.warn("Force-killed plugin process: id={}", pluginId, e)
                 Result.success(Unit)
             } finally {
+                // Registry entry goes last, and only if it is still this process. "Registered
+                // implies reapable" has to hold for as long as the child is alive, so a host exit
+                // part-way through an unload still reaps it; and removing by id alone could evict
+                // a replacement that a concurrent respawn had already registered.
                 process?.let {
                     kernelRegistry()?.unregisterIfSame(it.config.processId, it)
                 }
