@@ -261,20 +261,19 @@ class DefaultPlugin(
 
                 // Only wire if BOSS_MODE=KERNEL
                 val bossMode =
-                    System.getenv("BOSS_MODE")
-                        ?: try {
-                            val cfgCls = Class.forName("ai.rever.boss.config.ConfigLoader")
-                            val cfgInstance = cfgCls.getDeclaredField("INSTANCE").get(null)
-                            cfgCls
-                                .getMethod(
-                                    "getConfig",
-                                    String::class.java,
-                                    String::class.java,
-                                ).invoke(cfgInstance, "BOSS_MODE", null) as? String
-                        } catch (e: Exception) {
-                            logger.warn(LogCategory.SYSTEM, "OOP spawner: ConfigLoader failed", mapOf("error" to e.toString()))
-                            null
-                        }
+                    try {
+                        val cfgCls = Class.forName("ai.rever.boss.config.ConfigLoader")
+                        val cfgInstance = cfgCls.getDeclaredField("INSTANCE").get(null)
+                        cfgCls
+                            .getMethod(
+                                "getConfig",
+                                String::class.java,
+                                String::class.java,
+                            ).invoke(cfgInstance, "BOSS_MODE", null) as? String
+                    } catch (e: Exception) {
+                        logger.warn(LogCategory.SYSTEM, "OOP spawner: ConfigLoader failed", mapOf("error" to e.toString()))
+                        null
+                    }
                 logger.info(LogCategory.SYSTEM, "OOP spawner: BOSS_MODE resolved", mapOf("bossMode" to (bossMode ?: "null")))
                 if (bossMode == "KERNEL") {
                     // Reuse the kernel's own ProcessSpawner rather than building a second one.
@@ -894,10 +893,14 @@ class DefaultPlugin(
         DirectoryPickerProviderImpl()
     }
 
-    // Project data provider for managing recent projects
-    override val projectDataProvider: ai.rever.boss.plugin.api.ProjectDataProvider by lazy {
-        ProjectDataProviderImpl(windowProjectState)
-    }
+    // Project data provider for managing recent projects.
+    // Named delegate so dispose() can cancel its collector without forcing the lazy
+    // (see logDataProviderDelegate for the same pattern) - its recentProjects mirrors a
+    // process-wide singleton, not this window's own state, so it outlives the window
+    // unless something says otherwise (BossConsole#520).
+    private val projectDataProviderDelegate =
+        lazy { ProjectDataProviderImpl(windowProjectState) }
+    override val projectDataProvider: ai.rever.boss.plugin.api.ProjectDataProvider by projectDataProviderDelegate
 
     /**
      * Create a sandboxed plugin context for a specific plugin.
@@ -1106,6 +1109,9 @@ class DefaultPlugin(
         if (gitDataProviderDelegate.isInitialized()) {
             (gitDataProvider as? DisposableProvider)?.dispose()
         }
+        if (projectDataProviderDelegate.isInitialized()) {
+            (projectDataProvider as? DisposableProvider)?.dispose()
+        }
         pluginScope.cancel()
     }
 
@@ -1282,19 +1288,18 @@ class DefaultPlugin(
     private fun registerKernelPluginServices() {
         try {
             val bossMode =
-                System.getenv("BOSS_MODE")
-                    ?: try {
-                        val configCls = Class.forName("ai.rever.boss.config.ConfigLoader")
-                        val cfgInst = configCls.getDeclaredField("INSTANCE").get(null)
-                        configCls
-                            .getMethod(
-                                "getConfig",
-                                String::class.java,
-                                String::class.java,
-                            ).invoke(cfgInst, "BOSS_MODE", null) as? String
-                    } catch (_: Exception) {
-                        null
-                    }
+                try {
+                    val configCls = Class.forName("ai.rever.boss.config.ConfigLoader")
+                    val cfgInst = configCls.getDeclaredField("INSTANCE").get(null)
+                    configCls
+                        .getMethod(
+                            "getConfig",
+                            String::class.java,
+                            String::class.java,
+                        ).invoke(cfgInst, "BOSS_MODE", null) as? String
+                } catch (_: Exception) {
+                    null
+                }
             if (bossMode != "KERNEL") return
 
             val bootstrapCls = Class.forName("ai.rever.boss.kernel.KernelBootstrap")
