@@ -13,6 +13,7 @@ import java.awt.BorderLayout
 import java.awt.Color
 import java.awt.Frame
 import java.awt.GraphicsEnvironment
+import java.awt.KeyboardFocusManager
 import java.awt.Rectangle
 import java.awt.Window
 import java.awt.event.ActionEvent
@@ -743,12 +744,11 @@ object FullscreenBrowserWindow {
                     !isExiting &&
                     isCurrentFrameSession(expectedEpoch, browser, frame) &&
                     currentBrowserView === browserView &&
-                    frame.isShowing
+                    frame.isShowing && frame.isFocused
             },
+            hasFocus = { isFocusWithin(browserView, KeyboardFocusManager.getCurrentKeyboardFocusManager().focusOwner) },
             attemptFocus = {
                 try {
-                    frame.toFront()
-                    frame.requestFocus()
                     browserView.requestFocusInWindow()
                 } catch (e: Exception) {
                     logger.warn(
@@ -757,7 +757,6 @@ object FullscreenBrowserWindow {
                         mapOf("reason" to reason),
                         error = e,
                     )
-                    false
                 }
             },
             onExhausted = {
@@ -840,8 +839,8 @@ object FullscreenBrowserWindow {
                 frame.isUndecorated = true
                 val screenBounds = displayBounds(frame)
                 frame.setBounds(screenBounds.x, screenBounds.y, screenBounds.width, screenBounds.height)
-                frame.isVisible = true
                 hasReachedFullscreen = true
+                showAndActivateFrame(frame)
                 requestFullscreenBrowserFocus(
                     frame = frame,
                     browserView = browserView,
@@ -867,6 +866,12 @@ object FullscreenBrowserWindow {
         }
     }
 
+    private fun showAndActivateFrame(frame: JFrame) {
+        frame.isVisible = true
+        frame.toFront()
+        frame.requestFocus()
+    }
+
     private fun installFullscreenFrameListeners(
         frame: JFrame,
         browser: Browser,
@@ -881,8 +886,10 @@ object FullscreenBrowserWindow {
         )
 
         frame.addWindowFocusListener(
-            object : WindowAdapter() {
-                override fun windowGainedFocus(event: WindowEvent?) {
+            FullscreenFocusListener(
+                isCurrent = { isCurrentFrameSession(expectedEpoch, browser, frame) },
+                cancelFocus = fullscreenFocusCoordinator::cancel,
+                requestFocus = {
                     currentBrowserView?.let { browserView ->
                         requestFullscreenBrowserFocus(
                             frame = frame,
@@ -892,8 +899,8 @@ object FullscreenBrowserWindow {
                             reason = "fullscreen window regained focus",
                         )
                     }
-                }
-            },
+                },
+            ),
         )
 
         // Detect when exiting native fullscreen (green button or ESC).
@@ -955,7 +962,7 @@ object FullscreenBrowserWindow {
                 bounds.y + (bounds.height - frame.height) / 2,
             )
         }
-        frame.isVisible = true
+        showAndActivateFrame(frame)
         videoFullscreenTracker.register(frame, expectedEpoch)
         requestNativeMacOSFullscreen(frame, browser, expectedEpoch)
     }
@@ -1052,7 +1059,8 @@ object FullscreenBrowserWindow {
         overlay.frame.isAlwaysOnTop = true
         overlay.frame.extendedState = JFrame.NORMAL
         overlay.frame.setBounds(bounds)
-        overlay.frame.isVisible = true
+        overlayCoordinator.installFocusBehavior(overlay.frame, currentOwnerWindowId)
+        showAndActivateFrame(overlay.frame)
         requestFullscreenBrowserFocus(
             frame = overlay.frame,
             browserView = overlay.browserView,
@@ -1060,7 +1068,6 @@ object FullscreenBrowserWindow {
             expectedEpoch = expectedEpoch,
             reason = "borderless fullscreen overlay entry",
         )
-        overlayCoordinator.installFocusBehavior(overlay.frame, currentOwnerWindowId)
         if (watchOwnerExit) {
             overlayCoordinator.watchOwnerExit(currentOwnerWindowId, expectedEpoch)
         }
