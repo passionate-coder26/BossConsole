@@ -15,10 +15,18 @@ import java.util.concurrent.ConcurrentHashMap
  * immediately after unlocking would be unsafe because an existing waiter could
  * retain the old mutex while a new caller receives a different one.
  *
- * This coordinator does not synchronize with external processes.
+ * Path identity stays stable across atomic replacement; an inode key would not.
+ * Real-path failures fall back to canonical identity as a best-effort degradation:
+ * platforms where those spellings differ may not coordinate mixed-resolution calls.
+ * If canonical resolution also fails, the caller receives a per-file error.
+ * This coordinator does not synchronize with external processes or editor buffers
+ * opened after the caller has selected the closed-file path.
  */
 internal class ClosedFileReplacementCoordinator {
     private val entries = ConcurrentHashMap<String, Entry>()
+
+    internal val trackedFileCount: Int
+        get() = entries.size
 
     suspend fun <T> withFile(
         file: File,

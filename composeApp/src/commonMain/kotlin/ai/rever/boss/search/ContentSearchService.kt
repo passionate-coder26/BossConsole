@@ -644,6 +644,11 @@ class ContentSearchService(
         dryRun: Boolean,
         isCancelled: () -> Boolean,
     ): FileReplaceResult {
+        // UTF-8 in, UTF-8 out. A file in another single-byte encoding has no NUL
+        // bytes, so it passes the binary check, and round-tripping it through
+        // readText/writeText replaces its undecodable bytes with U+FFFD - a
+        // silent rewrite of bytes the user never asked to touch. Detect that the
+        // decode was lossy and refuse, rather than corrupting the file.
         val text = file.readText()
 
         return when {

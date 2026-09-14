@@ -6,10 +6,12 @@ import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.async
 import kotlinx.coroutines.cancelAndJoin
 import kotlinx.coroutines.runBlocking
+import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.io.TempDir
 import java.io.File
 import java.io.IOException
+import java.nio.file.Files
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertIs
@@ -159,6 +161,7 @@ class ClosedFileReplacementCoordinatorTest {
             }
 
             assertTrue(retryEntered)
+            assertEquals(0, coordinator.trackedFileCount)
         }
     }
 
@@ -185,7 +188,82 @@ class ClosedFileReplacementCoordinatorTest {
             }
 
             assertTrue(retryEntered)
+            assertEquals(0, coordinator.trackedFileCount)
         }
+    }
+
+    @Test
+    fun `a third caller cannot split admission during waiter handoff`(
+        @TempDir dir: File,
+    ) = runBlocking {
+        val coordinator = ClosedFileReplacementCoordinator()
+        val file = File(dir, "handoff.txt")
+        val releaseFirst = CompletableDeferred<Unit>()
+        val secondEntered = CompletableDeferred<Unit>()
+        val releaseSecond = CompletableDeferred<Unit>()
+        val first =
+            async(start = CoroutineStart.UNDISPATCHED) {
+                coordinator.withFile(file) { releaseFirst.await() }
+            }
+        val second =
+            async(start = CoroutineStart.UNDISPATCHED) {
+                coordinator.withFile(file) {
+                    secondEntered.complete(Unit)
+                    releaseSecond.await()
+                }
+            }
+        releaseFirst.complete(Unit)
+        first.await()
+        secondEntered.await()
+        var thirdEntered = false
+        val third =
+            async(start = CoroutineStart.UNDISPATCHED) {
+                coordinator.withFile(file) { thirdEntered = true }
+            }
+        try {
+            assertFalse(thirdEntered, "a new caller bypassed the admitted waiter")
+            assertEquals(1, coordinator.trackedFileCount)
+        } finally {
+            releaseSecond.complete(Unit)
+            second.await()
+            third.await()
+        }
+        assertTrue(thirdEntered)
+        assertEquals(0, coordinator.trackedFileCount)
+    }
+
+    @Test
+    fun `directory symlink aliases share admission`(
+        @TempDir dir: File,
+    ) = runBlocking {
+        val coordinator = ClosedFileReplacementCoordinator()
+        val file = File(dir, "document.txt").apply { writeText("alpha beta") }
+        val link = runCatching { Files.createSymbolicLink(File(dir, "link").toPath(), dir.toPath()) }
+        assumeTrue(link.isSuccess, "directory symlinks unavailable on this platform")
+        runOverlappingReplacements(
+            coordinator,
+            Replacement(file, "alpha", "ALPHA"),
+            Replacement(File(link.getOrThrow().toFile(), "document.txt"), "beta", "BETA"),
+        )
+        assertEquals("ALPHA BETA", file.readText())
+        assertEquals(0, coordinator.trackedFileCount)
+    }
+
+    @Test
+    fun `case aliases share admission on case insensitive volumes`(
+        @TempDir dir: File,
+    ) = runBlocking {
+        val coordinator = ClosedFileReplacementCoordinator()
+        val file = File(dir, "document.txt").apply { writeText("alpha beta") }
+        val alias = File(dir, "DOCUMENT.TXT")
+        assumeTrue(alias.exists(), "case-sensitive volume")
+        runOverlappingReplacements(
+            coordinator,
+            Replacement(file, "alpha", "ALPHA"),
+            Replacement(alias, "beta", "BETA"),
+        )
+        assertEquals("ALPHA BETA", file.readText())
+        assertEquals(0, coordinator.trackedFileCount)
     }
 
     private suspend fun CoroutineScope.runOverlappingReplacements(
