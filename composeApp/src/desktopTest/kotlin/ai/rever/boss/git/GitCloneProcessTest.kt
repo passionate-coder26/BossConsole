@@ -11,6 +11,7 @@ import org.junit.jupiter.api.io.TempDir
 import java.io.ByteArrayInputStream
 import java.io.ByteArrayOutputStream
 import java.io.File
+import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
 import java.util.concurrent.CompletableFuture
@@ -19,6 +20,7 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import java.util.concurrent.atomic.AtomicReference
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
@@ -166,6 +168,93 @@ class GitCloneProcessTest {
             assertEquals(listOf("fatal: repository not found"), lines)
             assertFalse(process.wasForciblyDestroyed)
             assertEquals(0, cleanupCalls.get())
+        }
+
+    @Test
+    fun `successful exit remains authoritative when an entered progress callback is late`() =
+        runBlocking {
+            val process =
+                ControlledProcess(
+                    processOutput =
+                        ByteArrayInputStream(
+                            "late progress\n".toByteArray(Charsets.UTF_8),
+                        ),
+                    exitCode = 0,
+                    initiallyExited = true,
+                )
+            val callbackEntered = CountDownLatch(1)
+            val neverReleased = CountDownLatch(1)
+            val outputClosed = AtomicBoolean()
+            val progressPublished = AtomicBoolean()
+            val outputFailure = AtomicReference<Throwable?>()
+
+            val exitCode =
+                runCloneProcess(
+                    process = process,
+                    timeoutMillis = NORMAL_TIMEOUT_MILLIS,
+                    onOutputLine = {
+                        callbackEntered.countDown()
+                        try {
+                            neverReleased.await()
+                        } catch (_: InterruptedException) {
+                            // The bounded reader shutdown interrupts the late callback.
+                        }
+
+                        if (!outputClosed.get()) {
+                            progressPublished.set(true)
+                        }
+                    },
+                    onCancellation = {},
+                    outputLifecycle =
+                        CloneOutputLifecycle(
+                            onClosed = {
+                                outputClosed.set(true)
+                            },
+                            onFailure = outputFailure::set,
+                        ),
+                )
+
+            assertEquals(0, exitCode, "the successful Git exit must remain authoritative")
+            assertTrue(callbackEntered.count == 0L, "the progress callback was never entered")
+            assertTrue(outputClosed.get(), "terminal completion must close progress publication")
+            assertFalse(progressPublished.get(), "late progress must not publish after terminal completion")
+            assertTrue(
+                outputFailure.get() is IOException,
+                "the delayed reader should be reported as an advisory output failure",
+            )
+            assertFalse(process.wasForciblyDestroyed, "a successful process must not be treated as failed")
+        }
+
+    @Test
+    fun `progress callback failure aborts through central process cleanup`() =
+        runBlocking {
+            val process =
+                ControlledProcess(
+                    processOutput =
+                        ByteArrayInputStream(
+                            "progress\n".toByteArray(Charsets.UTF_8),
+                        ),
+                )
+            val cleanupCalls = AtomicInteger()
+
+            val failure =
+                assertFailsWith<IOException> {
+                    runCloneProcess(
+                        process = process,
+                        timeoutMillis = NORMAL_TIMEOUT_MILLIS,
+                        onOutputLine = {
+                            throw IOException("progress callback failed")
+                        },
+                        onCancellation = {
+                            cleanupCalls.incrementAndGet()
+                        },
+                    )
+                }
+
+            assertEquals("progress callback failed", failure.message)
+            assertFalse(process.isAlive, "callback failure must terminate the clone process")
+            assertTrue(process.wasForciblyDestroyed, "central cleanup must own parent termination")
+            assertEquals(1, cleanupCalls.get(), "abort cleanup must run exactly once")
         }
 }
 

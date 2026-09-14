@@ -16,6 +16,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.TimeoutCancellationException
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -30,8 +31,16 @@ import java.io.InputStreamReader
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
+import kotlin.coroutines.AbstractCoroutineContextElement
+import kotlin.coroutines.CoroutineContext
 import ai.rever.boss.plugin.git.GitOperationResult.Error as GitError
 import ai.rever.boss.plugin.git.GitOperationResult.Success as GitSuccess
+
+private class GitCloneTimeoutContext(
+    val timeoutMillis: Long,
+) : AbstractCoroutineContextElement(GitCloneTimeoutContext) {
+    companion object Key : CoroutineContext.Key<GitCloneTimeoutContext>
+}
 
 /**
  * Desktop implementation of GitService using git CLI.
@@ -2224,6 +2233,20 @@ actual object GitService {
      * @param onProgress Callback for progress updates
      * @return GitOperationResult indicating success or failure
      */
+    internal suspend fun cloneRepositoryWithTimeout(
+        repositoryUrl: String,
+        targetDirectory: String,
+        onProgress: (String) -> Unit,
+        timeoutMillis: Long,
+    ): GitOperationResult =
+        withContext(GitCloneTimeoutContext(timeoutMillis)) {
+            cloneRepository(
+                repositoryUrl = repositoryUrl,
+                targetDirectory = targetDirectory,
+                onProgress = onProgress,
+            )
+        }
+
     actual suspend fun cloneRepository(
         repositoryUrl: String,
         targetDirectory: String,
@@ -2280,6 +2303,13 @@ actual object GitService {
                 // Execute git clone with progress and a cancellable 10-minute timeout
                 onProgress("Initializing clone...")
 
+                val cloneProgressOpen = AtomicBoolean(true)
+                val publishCloneProgress: (String) -> Unit = { message ->
+                    if (cloneProgressOpen.get()) {
+                        onProgress(message)
+                    }
+                }
+
                 val process =
                     ProcessBuilder(
                         "git",
@@ -2296,54 +2326,79 @@ actual object GitService {
                 val exitCode =
                     runCloneProcess(
                         process = process,
-                        timeoutMillis = GIT_CLONE_TIMEOUT_MILLIS,
+                        timeoutMillis =
+                            currentCoroutineContext()[GitCloneTimeoutContext]?.timeoutMillis
+                                ?: GIT_CLONE_TIMEOUT_MILLIS,
                         onOutputLine = { progressLine ->
                             // Git progress comes on stderr, but we redirected it to stdout
                             // Filter and send meaningful progress updates
                             when {
                                 progressLine.contains("Cloning into") -> {
-                                    onProgress("Cloning repository...")
+                                    publishCloneProgress("Cloning repository...")
                                 }
 
                                 progressLine.contains("remote: Counting objects") -> {
-                                    onProgress("Receiving objects...")
+                                    publishCloneProgress("Receiving objects...")
                                 }
 
                                 progressLine.contains("Receiving objects") -> {
                                     val percentMatch = Regex("(\\d+)%").find(progressLine)
                                     if (percentMatch != null) {
-                                        onProgress("Receiving objects: ${percentMatch.value}")
+                                        publishCloneProgress("Receiving objects: ${percentMatch.value}")
                                     } else {
-                                        onProgress("Receiving objects...")
+                                        publishCloneProgress("Receiving objects...")
                                     }
                                 }
 
                                 progressLine.contains("Resolving deltas") -> {
                                     val percentMatch = Regex("(\\d+)%").find(progressLine)
                                     if (percentMatch != null) {
-                                        onProgress("Resolving deltas: ${percentMatch.value}")
+                                        publishCloneProgress("Resolving deltas: ${percentMatch.value}")
                                     } else {
-                                        onProgress("Resolving deltas...")
+                                        publishCloneProgress("Resolving deltas...")
                                     }
                                 }
 
                                 progressLine.contains("Checking out files") -> {
-                                    onProgress("Checking out files...")
+                                    publishCloneProgress("Checking out files...")
                                 }
                             }
                             logger.debug(LogCategory.GENERAL, "Clone progress: $progressLine")
                         },
                         onCancellation = {
-                            runCatching {
-                                targetDir.deleteRecursively()
-                            }.onFailure { cleanupError ->
+                            val deletionResult =
+                                runCatching {
+                                    targetDir.deleteRecursively()
+                                }
+
+                            deletionResult.exceptionOrNull()?.let { cleanupError ->
                                 logger.warn(
                                     LogCategory.GENERAL,
-                                    "Failed to clean up after timeout or cancellation",
+                                    "Failed to clean up after clone abort",
                                     error = cleanupError,
                                 )
                             }
+
+                            if (deletionResult.getOrNull() == false && targetDir.exists()) {
+                                logger.warn(
+                                    LogCategory.GENERAL,
+                                    "Failed to remove partial clone directory: ${targetDir.absolutePath}",
+                                )
+                            }
                         },
+                        outputLifecycle =
+                            CloneOutputLifecycle(
+                                onClosed = {
+                                    cloneProgressOpen.set(false)
+                                },
+                                onFailure = { outputError ->
+                                    logger.warn(
+                                        LogCategory.GENERAL,
+                                        "Git clone completed before its progress reader settled",
+                                        error = outputError,
+                                    )
+                                },
+                            ),
                     )
 
                 if (exitCode == 0) {
