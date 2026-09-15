@@ -60,6 +60,7 @@ class GitCloneRepositoryLifecycleTest {
             }
 
         assertTrue(result is GitError, "timeout must return a Git error: $result")
+        assertTrue(result.message.contains("timed out"), "timeout must use the timeout error mapping")
         assertFalse(target.exists(), "timeout must remove the partial destination")
         assertRetrySucceeds(tempDirectory, target)
     }
@@ -101,19 +102,49 @@ class GitCloneRepositoryLifecycleTest {
         assertRetrySucceeds(tempDirectory, target)
     }
 
+    // Adapted from Antriksh1984's independent #659 regression coverage.
+    @Test
+    fun `pre-existing target is refused without deleting its contents`(
+        @TempDir tempDirectory: Path,
+    ) = runBlocking {
+        val target = tempDirectory.resolve("existing").toFile().apply { mkdirs() }
+        val marker = File(target, "keep.txt").apply { writeText("user data") }
+        val result = GitService.cloneRepository("https://example.invalid/repo.git", target.absolutePath) {}
+        assertTrue(result is GitError)
+        assertEquals("user data", marker.readText())
+    }
+
+    // Adapted from Antriksh1984's independent #659 nonzero-exit regression.
+    @Test
+    fun `nonexistent source returns an ordinary clone error`(
+        @TempDir tempDirectory: Path,
+    ) = runBlocking {
+        val result =
+            GitService.cloneRepositoryWithTimeout(
+                tempDirectory.resolve("missing").toString(),
+                tempDirectory.resolve("target").toString(),
+                {},
+                PUBLIC_CLONE_TIMEOUT_MILLIS,
+            )
+        assertTrue(result is GitError)
+    }
+
     private suspend fun assertRetrySucceeds(
         tempDirectory: Path,
         target: File,
     ) {
         val source = createLocalRepository(tempDirectory.resolve("retry-source"))
 
+        val progress = mutableListOf<String>()
         val result =
             GitService.cloneRepository(
                 repositoryUrl = source.absolutePath,
                 targetDirectory = target.absolutePath,
-                onProgress = {},
+                onProgress = progress::add,
             )
 
+        assertEquals("Clone completed successfully", progress.last())
+        assertTrue(progress.contains("Cloning repository..."))
         assertTrue(result is GitSuccess, "retry must succeed after cleanup: $result")
         assertTrue(
             File(target, "README.md").isFile,

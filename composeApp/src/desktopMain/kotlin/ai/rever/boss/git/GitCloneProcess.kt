@@ -4,14 +4,20 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.async
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.channels.BufferOverflow
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.runInterruptible
+import kotlinx.coroutines.selects.select
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
 import java.io.BufferedReader
-import java.io.IOException
 import java.io.InputStreamReader
 import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicBoolean
-import java.util.concurrent.atomic.AtomicReference
 
 internal const val GIT_CLONE_TIMEOUT_MILLIS = 600_000L
 private const val CLONE_PROCESS_KILL_TIMEOUT_SECONDS = 5L
@@ -19,8 +25,7 @@ private const val CLONE_OUTPUT_READER_JOIN_TIMEOUT_MILLIS = 5_000L
 
 private class CloneOutputReader(
     val thread: Thread,
-    val failure: AtomicReference<Throwable?>,
-    val acceptingCallbacks: AtomicBoolean,
+    val lines: Channel<String>,
 )
 
 internal class CloneOutputLifecycle(
@@ -34,11 +39,10 @@ internal fun cloneOutputReaderThreadName(process: Process): String {
 }
 
 /**
- * Streams a clone process's merged output while independently awaiting its exit.
- *
- * The output reader must never own the timeout: a live process may keep its pipe
- * open without producing another line. Timeout and caller cancellation therefore
- * suspend on [Process.onExit], then force process, stream, and reader cleanup.
+ * Streams advisory progress while independently awaiting process exit. The pipe
+ * reader only queues lines; callbacks belong to this coroutine and are settled
+ * before return. Callbacks must be prompt and must not suppress interruption.
+ * Interruptible callbacks allow cancellation without holding a cleanup lock.
  */
 internal suspend fun runCloneProcess(
     process: Process,
@@ -48,32 +52,42 @@ internal suspend fun runCloneProcess(
     outputLifecycle: CloneOutputLifecycle = CloneOutputLifecycle(),
 ): Int {
     val processResult = CompletableDeferred<Int>()
-    val outputReader = createCloneOutputReader(process, onOutputLine, processResult)
-    val outputClosed = AtomicBoolean()
+    val outputReader = createCloneOutputReader(process)
     var processExitObserved = false
-
-    fun closeOutput() {
-        if (outputClosed.compareAndSet(false, true)) {
-            runCatching { outputLifecycle.onClosed() }
+    var callbacksEnabled = true
+    val publish: (String) -> Unit = { line ->
+        if (callbacksEnabled) {
+            runCatching { onOutputLine(line) }.onFailure { failure ->
+                if (failure is CancellationException || failure is InterruptedException) throw failure
+                callbacksEnabled = false
+                runCatching { outputLifecycle.onFailure(failure) }
+            }
         }
     }
-
     try {
         registerCloneProcessExit(process, processResult)
         outputReader.thread.start()
-
         val exitCode =
             withTimeout(timeoutMillis) {
-                processResult.await()
+                awaitCloneResult(processResult, outputReader.lines, publish)
             }
-
         processExitObserved = true
-        closeOutput()
-        awaitCloneOutputReader(outputReader, outputLifecycle.onFailure)
+        // Git's result is authoritative. Draining trailing advisory output has its
+        // own bound; a slow callback is interrupted and settled before completion.
+        runCatching {
+            withTimeout(CLONE_OUTPUT_READER_JOIN_TIMEOUT_MILLIS) {
+                for (line in outputReader.lines) {
+                    runInterruptible(Dispatchers.IO) { publish(line) }
+                }
+            }
+        }.onFailure { failure ->
+            currentCoroutineContext().ensureActive()
+            runCatching { outputLifecycle.onFailure(failure) }
+        }
         return exitCode
     } finally {
-        outputReader.acceptingCallbacks.set(false)
-        closeOutput()
+        outputReader.lines.cancel()
+        runCatching { outputLifecycle.onClosed() }
         cleanupCloneProcess(
             process = process,
             outputReader = outputReader.thread,
@@ -82,66 +96,79 @@ internal suspend fun runCloneProcess(
     }
 }
 
-private fun createCloneOutputReader(
-    process: Process,
-    onOutputLine: (String) -> Unit,
+private suspend fun awaitCloneResult(
     processResult: CompletableDeferred<Int>,
-): CloneOutputReader {
-    val readerFailure = AtomicReference<Throwable?>(null)
-    val acceptingCallbacks = AtomicBoolean(true)
+    lines: Channel<String>,
+    onOutputLine: (String) -> Unit,
+): Int {
+    var outputOpen = true
+    while (true) {
+        val exitCode =
+            select<Int?> {
+                // Prefer a known exit over further advisory output, including a
+                // reader error racing EOF after a successful process exit.
+                processResult.onAwait { it }
+                if (outputOpen) {
+                    lines.onReceiveCatching { result ->
+                        result.exceptionOrNull()?.let { throw it }
+                        val line = result.getOrNull()
+                        if (line == null) {
+                            outputOpen = false
+                            null
+                        } else {
+                            deliverCloneProgress(processResult, line, onOutputLine)
+                        }
+                    }
+                }
+            }
+        if (exitCode != null) return exitCode
+    }
+}
+
+private suspend fun deliverCloneProgress(
+    processResult: CompletableDeferred<Int>,
+    line: String,
+    onOutputLine: (String) -> Unit,
+): Int? =
+    coroutineScope {
+        val delivery =
+            async {
+                runCatching { runInterruptible(Dispatchers.IO) { onOutputLine(line) } }
+            }
+        try {
+            select {
+                processResult.onAwait { it }
+                delivery.onAwait { result ->
+                    result.getOrThrow()
+                    null
+                }
+            }
+        } finally {
+            delivery.cancelAndJoin()
+        }
+    }
+
+private fun createCloneOutputReader(process: Process): CloneOutputReader {
+    // Progress is advisory: bound memory and retain recent updates if a producer
+    // outruns its consumer. The pipe thread must never block on user code.
+    val lines = Channel<String>(64, BufferOverflow.DROP_OLDEST)
     val outputReader =
         Thread(
             {
-                runCatching {
-                    BufferedReader(InputStreamReader(process.inputStream, Charsets.UTF_8)).use { reader ->
-                        while (true) {
-                            val line = reader.readLine() ?: break
-                            if (acceptingCallbacks.get()) {
-                                onOutputLine(line)
+                val failure =
+                    runCatching {
+                        BufferedReader(InputStreamReader(process.inputStream, Charsets.UTF_8)).use { reader ->
+                            var line = reader.readLine()
+                            while (line != null && lines.trySend(line).isSuccess) {
+                                line = reader.readLine()
                             }
                         }
-                    }
-                }.exceptionOrNull()?.let { error ->
-                    readerFailure.compareAndSet(null, error)
-                    processResult.completeExceptionally(error)
-                }
+                    }.exceptionOrNull()
+                lines.close(failure)
             },
             cloneOutputReaderThreadName(process),
-        ).apply {
-            isDaemon = true
-        }
-
-    return CloneOutputReader(
-        thread = outputReader,
-        failure = readerFailure,
-        acceptingCallbacks = acceptingCallbacks,
-    )
-}
-
-private suspend fun awaitCloneOutputReader(
-    outputReader: CloneOutputReader,
-    onOutputFailure: (Throwable) -> Unit,
-) {
-    withContext(Dispatchers.IO) {
-        outputReader.thread.join(CLONE_OUTPUT_READER_JOIN_TIMEOUT_MILLIS)
-    }
-
-    val failure =
-        if (outputReader.thread.isAlive) {
-            IOException("Git clone output reader did not finish after the process exited")
-        } else {
-            outputReader.failure.get()
-        }
-
-    outputReader.acceptingCallbacks.set(false)
-
-    if (outputReader.thread.isAlive) {
-        outputReader.thread.interrupt()
-    }
-
-    if (failure != null) {
-        runCatching { onOutputFailure(failure) }
-    }
+        ).apply { isDaemon = true }
+    return CloneOutputReader(outputReader, lines)
 }
 
 /**

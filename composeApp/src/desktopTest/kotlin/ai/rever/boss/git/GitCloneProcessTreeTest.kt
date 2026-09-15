@@ -31,7 +31,7 @@ private const val TREE_TEST_TIMEOUT_SECONDS = 60L
 @Timeout(TREE_TEST_TIMEOUT_SECONDS)
 class GitCloneProcessTreeTest {
     @Test
-    fun `callback failure terminates the real parent and helper process`(
+    fun `deadline still terminates the real tree after an advisory callback failure`(
         @TempDir tempDirectory: Path,
     ) = runBlocking {
         val process = startProcessTree(tempDirectory)
@@ -39,24 +39,25 @@ class GitCloneProcessTreeTest {
         val cleanupCalls = AtomicInteger()
 
         try {
-            val failure =
-                assertFailsWith<IOException> {
-                    runCloneProcess(
-                        process = process,
-                        timeoutMillis = TREE_CANCELLATION_TIMEOUT_MILLIS,
-                        onOutputLine = { line ->
-                            captureHelperPid(line, helperPid)
-                            if (line.startsWith(TREE_READY_PREFIX)) {
-                                throw IOException("forced progress callback failure")
-                            }
-                        },
-                        onCancellation = {
-                            cleanupCalls.incrementAndGet()
-                        },
-                    )
-                }
+            val failures = AtomicInteger()
+            assertFailsWith<TimeoutCancellationException> {
+                runCloneProcess(
+                    process = process,
+                    timeoutMillis = TREE_PROCESS_TIMEOUT_MILLIS,
+                    onOutputLine = { line ->
+                        captureHelperPid(line, helperPid)
+                        if (line.startsWith(TREE_READY_PREFIX)) {
+                            throw IOException("forced progress callback failure")
+                        }
+                    },
+                    onCancellation = {
+                        cleanupCalls.incrementAndGet()
+                    },
+                    outputLifecycle = CloneOutputLifecycle(onFailure = { failures.incrementAndGet() }),
+                )
+            }
 
-            assertEquals("forced progress callback failure", failure.message)
+            assertEquals(1, failures.get())
             assertEquals(1, cleanupCalls.get())
             assertTreeStopped(process, helperPid)
         } finally {

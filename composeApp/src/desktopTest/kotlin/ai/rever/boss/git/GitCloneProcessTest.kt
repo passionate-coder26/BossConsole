@@ -185,7 +185,7 @@ class GitCloneProcessTest {
             val callbackEntered = CountDownLatch(1)
             val neverReleased = CountDownLatch(1)
             val outputClosed = AtomicBoolean()
-            val progressPublished = AtomicBoolean()
+            val callbackSettled = AtomicBoolean()
             val outputFailure = AtomicReference<Throwable?>()
 
             val exitCode =
@@ -196,12 +196,9 @@ class GitCloneProcessTest {
                         callbackEntered.countDown()
                         try {
                             neverReleased.await()
-                        } catch (_: InterruptedException) {
-                            // The bounded reader shutdown interrupts the late callback.
-                        }
-
-                        if (!outputClosed.get()) {
-                            progressPublished.set(true)
+                        } finally {
+                            callbackSettled.set(true)
+                            assertFalse(outputClosed.get(), "callback must settle before output closes")
                         }
                     },
                     onCancellation = {},
@@ -217,44 +214,114 @@ class GitCloneProcessTest {
             assertEquals(0, exitCode, "the successful Git exit must remain authoritative")
             assertTrue(callbackEntered.count == 0L, "the progress callback was never entered")
             assertTrue(outputClosed.get(), "terminal completion must close progress publication")
-            assertFalse(progressPublished.get(), "late progress must not publish after terminal completion")
+            assertTrue(callbackSettled.get(), "callback must settle before the operation returns")
             assertTrue(
-                outputFailure.get() is IOException,
+                outputFailure.get() is TimeoutCancellationException,
                 "the delayed reader should be reported as an advisory output failure",
             )
             assertFalse(process.wasForciblyDestroyed, "a successful process must not be treated as failed")
         }
 
     @Test
-    fun `progress callback failure aborts through central process cleanup`() =
+    fun `cancellation interrupts an entered callback before cleanup returns`() =
+        runBlocking {
+            val process = ControlledProcess(ByteArrayInputStream("progress\n".toByteArray()))
+            val entered = CountDownLatch(1)
+            val settled = AtomicBoolean()
+            val cleanupCalls = AtomicInteger()
+            val operation =
+                async(Dispatchers.Default) {
+                    runCloneProcess(
+                        process,
+                        CANCELLATION_TIMEOUT_MILLIS,
+                        onOutputLine = {
+                            entered.countDown()
+                            try {
+                                CountDownLatch(1).await()
+                            } finally {
+                                settled.set(true)
+                            }
+                        },
+                        onCancellation = { cleanupCalls.incrementAndGet() },
+                    )
+                }
+            assertTrue(entered.await(READER_START_TIMEOUT_SECONDS, TimeUnit.SECONDS))
+            operation.cancel()
+            assertFailsWith<CancellationException> { operation.await() }
+            assertTrue(settled.get(), "no entered callback may survive operation completion")
+            assertFalse(process.isAlive)
+            assertEquals(1, cleanupCalls.get())
+        }
+
+    @Test
+    fun `process exit interrupts an entered callback and preserves success`() =
+        runBlocking {
+            val process = ControlledProcess(ByteArrayInputStream("progress\n".toByteArray()))
+            val entered = CountDownLatch(1)
+            val settled = AtomicBoolean()
+            val operation =
+                async(Dispatchers.Default) {
+                    runCloneProcess(process, CANCELLATION_TIMEOUT_MILLIS, {
+                        entered.countDown()
+                        try {
+                            CountDownLatch(1).await()
+                        } finally {
+                            settled.set(true)
+                        }
+                    }, {})
+                }
+            assertTrue(entered.await(READER_START_TIMEOUT_SECONDS, TimeUnit.SECONDS))
+            process.destroy() // ControlledProcess models a normal exit here.
+            assertEquals(0, operation.await())
+            assertTrue(settled.get())
+            assertFalse(process.wasForciblyDestroyed)
+        }
+
+    @Test
+    fun `progress callback failure is advisory and preserves a successful clone`() =
+        runBlocking {
+            val process = ControlledProcess(ByteArrayInputStream("progress\n".toByteArray()))
+            val observed = CountDownLatch(1)
+            val failures = AtomicInteger()
+            val cleanupCalls = AtomicInteger()
+            val operation =
+                async(Dispatchers.Default) {
+                    runCloneProcess(
+                        process,
+                        CANCELLATION_TIMEOUT_MILLIS,
+                        onOutputLine = { throw IOException("progress callback failed") },
+                        onCancellation = { cleanupCalls.incrementAndGet() },
+                        outputLifecycle =
+                            CloneOutputLifecycle(onFailure = {
+                                failures.incrementAndGet()
+                                observed.countDown()
+                            }),
+                    )
+                }
+            assertTrue(observed.await(READER_START_TIMEOUT_SECONDS, TimeUnit.SECONDS))
+            assertTrue(process.isAlive, "an advisory callback fault must not kill Git")
+            process.destroy()
+            assertEquals(0, operation.await())
+            assertEquals(1, failures.get())
+            assertEquals(0, cleanupCalls.get())
+            assertFalse(process.wasForciblyDestroyed)
+        }
+
+    @Test
+    fun `reader failure aborts through central cleanup`() =
         runBlocking {
             val process =
                 ControlledProcess(
-                    processOutput =
-                        ByteArrayInputStream(
-                            "progress\n".toByteArray(Charsets.UTF_8),
-                        ),
+                    object : InputStream() {
+                        override fun read(): Int = throw IOException("pipe failed")
+                    },
                 )
-            val cleanupCalls = AtomicInteger()
-
-            val failure =
-                assertFailsWith<IOException> {
-                    runCloneProcess(
-                        process = process,
-                        timeoutMillis = NORMAL_TIMEOUT_MILLIS,
-                        onOutputLine = {
-                            throw IOException("progress callback failed")
-                        },
-                        onCancellation = {
-                            cleanupCalls.incrementAndGet()
-                        },
-                    )
-                }
-
-            assertEquals("progress callback failed", failure.message)
-            assertFalse(process.isAlive, "callback failure must terminate the clone process")
-            assertTrue(process.wasForciblyDestroyed, "central cleanup must own parent termination")
-            assertEquals(1, cleanupCalls.get(), "abort cleanup must run exactly once")
+            val cleanups = AtomicInteger()
+            assertFailsWith<IOException> {
+                runCloneProcess(process, NORMAL_TIMEOUT_MILLIS, {}, { cleanups.incrementAndGet() })
+            }
+            assertFalse(process.isAlive)
+            assertEquals(1, cleanups.get())
         }
 }
 

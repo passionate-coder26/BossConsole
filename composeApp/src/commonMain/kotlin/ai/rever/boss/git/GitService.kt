@@ -442,6 +442,8 @@ expect object GitService {
      * @param onProgress Callback for progress updates (receives progress messages)
      * @return Result indicating success or failure with appropriate message
      */
+    // Progress callbacks are serialized and settle before return. They must be
+    // prompt and must not suppress thread interruption during cancellation.
     suspend fun cloneRepository(
         repositoryUrl: String,
         targetDirectory: String,
