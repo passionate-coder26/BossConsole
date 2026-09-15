@@ -69,7 +69,7 @@ internal suspend fun runCloneProcess(
         outputReader.thread.start()
         val exitCode =
             withTimeout(timeoutMillis) {
-                awaitCloneResult(processResult, outputReader.lines, publish)
+                awaitCloneResult(process, processResult, outputReader.lines, publish)
             }
         processExitObserved = true
         // Git's result is authoritative. Draining trailing advisory output has its
@@ -97,6 +97,7 @@ internal suspend fun runCloneProcess(
 }
 
 private suspend fun awaitCloneResult(
+    process: Process,
     processResult: CompletableDeferred<Int>,
     lines: Channel<String>,
     onOutputLine: (String) -> Unit,
@@ -110,9 +111,13 @@ private suspend fun awaitCloneResult(
                 processResult.onAwait { it }
                 if (outputOpen) {
                     lines.onReceiveCatching { result ->
-                        result.exceptionOrNull()?.let { throw it }
+                        val failure = result.exceptionOrNull()
                         val line = result.getOrNull()
-                        if (line == null) {
+                        if (failure != null) {
+                            // onExit delivery can lag the actual OS exit. A pipe
+                            // error must not delete a checkout Git already completed.
+                            runCatching { process.exitValue() }.getOrElse { throw failure }
+                        } else if (line == null) {
                             outputOpen = false
                             null
                         } else {

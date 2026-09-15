@@ -308,6 +308,25 @@ class GitCloneProcessTest {
         }
 
     @Test
+    fun `pipe failure after actual success preserves exit when notification is delayed`() =
+        runBlocking {
+            val process =
+                ControlledProcess(
+                    processOutput =
+                        object : InputStream() {
+                            override fun read(): Int = throw IOException("pipe closed after exit")
+                        },
+                    initiallyExited = true,
+                    deferExitNotification = true,
+                )
+            val cleanups = AtomicInteger()
+            val exitCode = runCloneProcess(process, NORMAL_TIMEOUT_MILLIS, {}, { cleanups.incrementAndGet() })
+            assertEquals(0, exitCode)
+            assertEquals(0, cleanups.get())
+            assertFalse(process.wasForciblyDestroyed)
+        }
+
+    @Test
     fun `reader failure aborts through central cleanup`() =
         runBlocking {
             val process =
@@ -329,6 +348,7 @@ private class ControlledProcess(
     private val processOutput: InputStream,
     private val exitCode: Int = 0,
     initiallyExited: Boolean = false,
+    private val deferExitNotification: Boolean = false,
 ) : Process() {
     private val exitFuture = CompletableFuture<Process>()
     private val alive = AtomicBoolean(!initiallyExited)
@@ -386,7 +406,7 @@ private class ControlledProcess(
 
     override fun isAlive(): Boolean = alive.get()
 
-    override fun onExit(): CompletableFuture<Process> = exitFuture
+    override fun onExit(): CompletableFuture<Process> = if (deferExitNotification) CompletableFuture() else exitFuture
 
     private fun finish() {
         alive.set(false)
