@@ -1,9 +1,11 @@
 package ai.rever.boss.plugin
 
+import ai.rever.boss.components.plugin.DependentPlugin
 import ai.rever.boss.components.plugin.DependentRestartCoordinator
 import ai.rever.boss.components.plugin.DependentRestartDeclinedException
 import ai.rever.boss.components.plugin.DependentRestartEventBus
 import ai.rever.boss.components.plugin.DynamicPluginManager
+import ai.rever.boss.plugin.api.CanUnloadResult
 import ai.rever.boss.plugin.api.PluginUnloadIntent
 import ai.rever.boss.utils.logging.BossLogger
 import ai.rever.boss.utils.logging.LogCategory
@@ -43,9 +45,27 @@ object PluginRemoval {
             // the unload at all: a `canUnload = false` plugin is refused whatever the answer, so
             // asking would be a dialog with one real outcome. (The menu gates on that too, but
             // this function is reachable from the deep-link handler as well.)
-            val info = manager.getPluginInfo(pluginId)
+            val targets = DynamicPluginManager.activeManagers().filter { it.isInstalled(pluginId) }
+            if (targets.isEmpty()) {
+                return@run Result.failure(IllegalStateException("Plugin is not installed: $pluginId"))
+            }
+            if (targets.any { it.getPluginInfo(pluginId)?.manifest?.canUnload == false }) {
+                return@run Result.failure(IllegalStateException("Plugin cannot be unloaded: $pluginId"))
+            }
+
+            val info = (targets.firstOrNull { it === manager } ?: targets.first()).getPluginInfo(pluginId)
+            val dependentsByManager = targets.associateWith { it.dependentsOf(pluginId) }
             val dependents =
-                if (info?.manifest?.canUnload == false) emptyList() else manager.dependentsOf(pluginId)
+                dependentsByManager.values
+                    .flatten()
+                    .distinctBy { it.pluginId }
+                    .sortedBy { it.loadPriority }
+
+            val preflight = preflightUnload(pluginId, dependentsByManager)
+            if (preflight.isFailure) {
+                return@run preflight
+            }
+
             val confirmed =
                 dependents.isEmpty() ||
                     DependentRestartEventBus.ask(
@@ -63,9 +83,20 @@ object PluginRemoval {
             // Forced only once the user has agreed to the consequence the veto exists to warn
             // about. With no dependents this is the unchanged non-forced path, so the manifest
             // gate and the unload-aware checks still apply as they always did.
-            val unloaded = manager.uninstallPlugin(pluginId, force = dependents.isNotEmpty())
-            if (unloaded.isFailure) {
-                return@run unloaded
+            for (target in targets) {
+                val unloaded =
+                    target.uninstallPlugin(
+                        pluginId,
+                        force = dependentsByManager.getValue(target).isNotEmpty(),
+                    )
+                if (unloaded.isFailure) {
+                    return@run unloaded
+                }
+            }
+            if (DynamicPluginManager.activeManagers().any { it.isInstalled(pluginId) }) {
+                return@run Result.failure(
+                    IllegalStateException("Plugin remains installed in another window: $pluginId"),
+                )
             }
             // Only once the plugin is unloaded: deleting a jar out from under a live classloader is
             // how you get NoClassDefFoundError from code that is still running.
@@ -76,6 +107,27 @@ object PluginRemoval {
             DependentRestartCoordinator.restartNow(dependents.map { it.pluginId })
             Result.success(Unit)
         }
+
+    /** Check every window before changing any of them. */
+    private suspend fun preflightUnload(
+        pluginId: String,
+        dependentsByManager: Map<DynamicPluginManager, List<DependentPlugin>>,
+    ): Result<Unit> {
+        for ((target, dependents) in dependentsByManager) {
+            val verdict =
+                if (dependents.isEmpty()) {
+                    target.checkCanUnload(pluginId)
+                } else {
+                    target.checkUnloadAware(pluginId)
+                }
+            if (verdict is CanUnloadResult.NotAllowed) {
+                return Result.failure(
+                    IllegalStateException("Cannot remove $pluginId: ${verdict.reasons.joinToString("; ")}"),
+                )
+            }
+        }
+        return Result.success(Unit)
+    }
 
     /**
      * Why [pluginId] cannot usefully be removed, or null when it can.
