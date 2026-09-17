@@ -27,30 +27,37 @@ import androidx.compose.ui.unit.dp
 fun SaveWorkspaceDialog(
     onDismiss: () -> Unit,
     onSave: (String) -> Unit,
+    saving: Boolean = false,
+    error: String? = null,
 ) {
     var name by remember { mutableStateOf("") }
 
     BossAlertDialog(
-        onDismissRequest = onDismiss,
+        onDismissRequest = { if (!saving) onDismiss() },
         title = { androidx.compose.material.Text("Save Space") },
         text = {
-            androidx.compose.material.OutlinedTextField(
-                value = name,
-                onValueChange = { name = it },
-                label = { androidx.compose.material.Text("Space Name") },
-                singleLine = true,
-            )
+            androidx.compose.foundation.layout.Column {
+                androidx.compose.material.OutlinedTextField(
+                    value = name,
+                    onValueChange = { name = it },
+                    label = { androidx.compose.material.Text("Space Name") },
+                    singleLine = true,
+                    enabled = !saving,
+                    isError = error != null,
+                )
+                error?.let { androidx.compose.material.Text(it) }
+            }
         },
         confirmButton = {
             androidx.compose.material.TextButton(
                 onClick = { onSave(name) },
-                enabled = name.isNotBlank(),
+                enabled = name.isNotBlank() && !saving,
             ) {
-                androidx.compose.material.Text("Save")
+                androidx.compose.material.Text(if (saving) "Saving…" else "Save")
             }
         },
         dismissButton = {
-            androidx.compose.material.TextButton(onClick = onDismiss) {
+            androidx.compose.material.TextButton(onClick = onDismiss, enabled = !saving) {
                 androidx.compose.material.Text("Cancel")
             }
         },

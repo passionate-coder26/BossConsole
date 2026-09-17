@@ -405,7 +405,18 @@ class SplitViewState(
     // that is read from composition. A plain map would leave the workspace menu marking whatever
     // was true when it last happened to recompose.
     private val preservedWorkspaceStates = mutableStateMapOf<String, PreservedWorkspaceState>()
-    private var _currentWorkspaceId by mutableStateOf<String?>(null)
+    private var workspaceIdentity by mutableStateOf<String?>(null)
+    internal var workspaceVisit = 0L
+        private set
+    internal val spaceSaveCoordinator =
+        ai.rever.boss.components.workspaces
+            .WindowSpaceSaveCoordinator()
+    private var _currentWorkspaceId: String?
+        get() = workspaceIdentity
+        set(value) {
+            workspaceVisit++
+            workspaceIdentity = value
+        }
     val currentWorkspaceId: String? get() = _currentWorkspaceId
 
     /**
@@ -415,7 +426,7 @@ class SplitViewState(
      * restore, or replace any layout tree.
      */
     fun rebindCurrentWorkspace(workspaceId: String) {
-        _currentWorkspaceId = workspaceId
+        workspaceIdentity = workspaceId
     }
 
     /**

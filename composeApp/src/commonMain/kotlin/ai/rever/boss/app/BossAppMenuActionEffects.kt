@@ -2,6 +2,7 @@ package ai.rever.boss.app
 
 import ai.rever.boss.components.bars.horizontal.StatusMessageManager
 import ai.rever.boss.components.dialogs.TabType
+import ai.rever.boss.components.home.goHome
 import ai.rever.boss.components.plugin.AvailablePluginUpdate
 import ai.rever.boss.components.plugin.DynamicPluginManager
 import ai.rever.boss.components.plugin.InstalledPluginRef
@@ -20,7 +21,7 @@ import ai.rever.boss.components.window_panel.SplitOrientation
 import ai.rever.boss.components.wizard.plugin.PluginWizardIntegration
 import ai.rever.boss.components.workspaces.applyWorkspace
 import ai.rever.boss.components.workspaces.extractCurrentWorkspace
-import ai.rever.boss.components.workspaces.spaceSnapshotForSave
+import ai.rever.boss.components.workspaces.saveWindowSpace
 import ai.rever.boss.components.workspaces.workspaceManager
 import ai.rever.boss.focusmode.FocusModeSettingsManager
 import ai.rever.boss.plugin.browser.ActiveBrowserRegistry
@@ -110,6 +111,26 @@ internal fun BossAppMenuActionEffects(
                 WindowAppearanceSettingsManager.updateSettings(restored)
             }
         }
+    }
+
+    LaunchedEffect(windowId) {
+        MenuActionsHandler.goHomeEvents
+            .onEach { eventWindowId ->
+                if (eventWindowId == windowId) {
+                    val panelId = goHome(splitViewState, state.tabRegistry)
+                    if (panelId == null) {
+                        StatusMessageManager.showMessage(
+                            "Home needs the browser tool. Enable or install Fluck Browser from Tools.",
+                        )
+                    } else {
+                        androidx.compose.runtime.withFrameNanos { }
+                        if (splitViewState.activePanelId == panelId && splitViewState.getPanel(panelId) != null) {
+                            // A pane can close or unmount during the frame boundary.
+                            runCatching { splitViewState.focusRequesterFor(panelId).requestFocus() }
+                        }
+                    }
+                }
+            }.launchIn(this)
     }
 
     // Listen for menu actions from MenuBar (File > New Tab, etc.)
@@ -516,27 +537,20 @@ internal fun BossAppMenuActionEffects(
         MenuActionsHandler.saveWorkspaceEvents
             .onEach { eventWindowId ->
                 if (eventWindowId == windowId) {
-                    val liveLayout =
-                        extractCurrentWorkspace(
-                            splitViewState,
-                            windowProjectState.selectedProject.value.path,
-                        )
-                    val snapshot =
-                        spaceSnapshotForSave(
-                            activeWorkspaceId = splitViewState.currentWorkspaceId,
-                            liveLayout = liveLayout,
-                            knownSpaces = workspaceManager.workspaces.value,
-                            processGlobalCurrent = workspaceManager.currentWorkspace.value,
-                        )
-                    workspaceManager.updateCurrentWorkspace(snapshot)
-                    workspaceManager.saveCurrentWorkspace()?.let { savedWorkspace ->
-                        splitViewState.rebindCurrentWorkspace(savedWorkspace.id)
+                    saveWindowSpace(
+                        windowId,
+                        workspaceManager,
+                        liveLayout = {
+                            extractCurrentWorkspace(
+                                splitViewState,
+                                windowProjectState.selectedProject.value.path,
+                            )
+                        },
+                    ).onSuccess {
+                        StatusMessageManager.showMessage("Space Saved")
+                    }.onFailure {
+                        StatusMessageManager.showMessage("Could not save Space")
                     }
-                    // Nothing marks it saved here. The unsaved flag is DERIVED, from the live
-                    // layout against the copy in `workspaceManager.workspaces` - which this
-                    // write replaces - so the affordance turns itself off when the bytes land
-                    // rather than when the button was pressed. See BossAppStartupEffects.
-                    StatusMessageManager.showMessage("Space Saved")
                 }
             }.launchIn(this)
     }

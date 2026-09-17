@@ -5,6 +5,7 @@ import ai.rever.boss.components.icons.SpaceIcon
 import ai.rever.boss.components.overlays.ContextMenuItem
 import ai.rever.boss.plugin.ui.BossTheme
 import ai.rever.boss.plugin.workspace.SplitConfig.SinglePanel
+import ai.rever.boss.window.LocalWindowId
 import androidx.compose.foundation.layout.Box
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Circle
@@ -21,7 +22,9 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.launch
 
 /**
  * Platform-specific function to open workspace directory
@@ -88,6 +91,8 @@ fun WorkspaceButton(
      */
     unsavedWorkspaceIds: Set<String> = emptySet(),
 ) {
+    val windowId = LocalWindowId.current
+    val saveScope = rememberCoroutineScope()
     val currentWorkspace by workspaceManager.currentWorkspace.collectAsState()
     val workspaces by workspaceManager.workspaces.collectAsState()
 
@@ -105,6 +110,8 @@ fun WorkspaceButton(
         remember(windowWorkspaces) { windowWorkspaces.values.flatten().toSet() }
 
     var showSaveDialog by remember { mutableStateOf(false) }
+    var saveError by remember { mutableStateOf<String?>(null) }
+    var saving by remember { mutableStateOf(false) }
     var showOpenDialog by remember { mutableStateOf(false) }
     var showDeleteDialog by remember { mutableStateOf(false) }
 
@@ -116,7 +123,10 @@ fun WorkspaceButton(
                 ContextMenuItem(
                     text = "Save Space...",
                     icon = Icons.Outlined.Save,
-                    onClick = { showSaveDialog = true },
+                    onClick = {
+                        saveError = null
+                        showSaveDialog = true
+                    },
                 ),
             )
 
@@ -319,13 +329,25 @@ fun WorkspaceButton(
     if (showSaveDialog) {
         SaveWorkspaceDialog(
             onDismiss = { showSaveDialog = false },
+            saving = saving,
+            error = saveError,
             onSave = { name ->
-                // Get current layout and save it with the provided name
-                getCurrentWorkspace?.invoke()?.let { currentLayout ->
-                    workspaceManager.updateCurrentWorkspace(currentLayout)
-                    workspaceManager.saveCurrentWorkspace(name)
+                val liveLayout = getCurrentWorkspace
+                if (liveLayout == null) {
+                    saveError = "This window's layout is unavailable. Please try again."
+                } else {
+                    saveScope.launch {
+                        saving = true
+                        saveError = null
+                        try {
+                            saveWindowSpace(windowId, workspaceManager, liveLayout, name)
+                                .onSuccess { showSaveDialog = false }
+                                .onFailure { saveError = "Could not save Space. Please try again." }
+                        } finally {
+                            saving = false
+                        }
+                    }
                 }
-                showSaveDialog = false
             },
         )
     }
