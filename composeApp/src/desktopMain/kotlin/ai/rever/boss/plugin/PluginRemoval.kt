@@ -53,6 +53,7 @@ object PluginRemoval {
                 return@run Result.failure(IllegalStateException("Plugin cannot be unloaded: $pluginId"))
             }
 
+            val additionalJarPaths = targets.mapNotNull { it.getPluginInfo(pluginId)?.jarPath }
             val info = (targets.firstOrNull { it === manager } ?: targets.first()).getPluginInfo(pluginId)
             val dependentsByManager = targets.associateWith { it.dependentsOf(pluginId) }
             val dependents =
@@ -83,30 +84,57 @@ object PluginRemoval {
             // Forced only once the user has agreed to the consequence the veto exists to warn
             // about. With no dependents this is the unchanged non-forced path, so the manifest
             // gate and the unload-aware checks still apply as they always did.
-            for (target in targets) {
-                val unloaded =
-                    target.uninstallPlugin(
-                        pluginId,
-                        force = dependentsByManager.getValue(target).isNotEmpty(),
+            val unloadFailures = unloadAcrossWindows(pluginId, dependentsByManager)
+            val remaining = DynamicPluginManager.activeManagers().filter { it.isInstalled(pluginId) }
+            if (remaining.isNotEmpty()) {
+                val reasons = unloadFailures.mapNotNull { it.message }.distinct()
+                val explanation = if (reasons.isEmpty()) "" else " (${reasons.joinToString("; ")})"
+                val failure =
+                    IllegalStateException(
+                        "Plugin removal failed; ${remaining.size} window(s) still report it installed: " +
+                            "$pluginId$explanation",
                     )
-                if (unloaded.isFailure) {
-                    return@run unloaded
-                }
-            }
-            if (DynamicPluginManager.activeManagers().any { it.isInstalled(pluginId) }) {
-                return@run Result.failure(
-                    IllegalStateException("Plugin remains installed in another window: $pluginId"),
-                )
+                unloadFailures.forEach { failure.addSuppressed(it) }
+                return@run Result.failure(failure)
             }
             // Only once the plugin is unloaded: deleting a jar out from under a live classloader is
             // how you get NoClassDefFoundError from code that is still running.
-            PluginArtifactCleanup.remove(pluginId, jarPath)
+            PluginArtifactCleanup.remove(
+                pluginId,
+                jarPath,
+                additionalJarPaths = additionalJarPaths,
+            )
             // Nothing is coming back, so the dependents are restarted now rather than recorded:
             // each is holding a handle into a classloader that has just closed, and a restart
             // makes it re-resolve to null - the truth about what is now installed.
-            DependentRestartCoordinator.restartNow(dependents.map { it.pluginId })
+            DependentRestartCoordinator.restartNowAcrossWindows(dependentsByManager)
             Result.success(Unit)
         }
+
+    /** Attempt every captured manager before deciding whether shared artifacts can be removed. */
+    private suspend fun unloadAcrossWindows(
+        pluginId: String,
+        dependentsByManager: Map<DynamicPluginManager, List<DependentPlugin>>,
+    ): List<Throwable> {
+        val failures = mutableListOf<Throwable>()
+        for ((target, dependents) in dependentsByManager) {
+            // A window may have unloaded the plugin while the confirmation dialog was open.
+            if (!target.isInstalled(pluginId)) continue
+
+            val result = target.uninstallPlugin(pluginId, force = dependents.isNotEmpty())
+            if (result.isFailure) {
+                val failure = result.exceptionOrNull() ?: IllegalStateException("Unload failed: $pluginId")
+                failures += failure
+                logger.warn(
+                    LogCategory.SYSTEM,
+                    "A window failed to unload the plugin during removal",
+                    mapOf("pluginId" to pluginId),
+                    error = failure,
+                )
+            }
+        }
+        return failures
+    }
 
     /** Check every window before changing any of them. */
     private suspend fun preflightUnload(

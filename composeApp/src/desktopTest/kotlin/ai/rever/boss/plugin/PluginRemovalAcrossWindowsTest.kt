@@ -1,6 +1,7 @@
 package ai.rever.boss.plugin
 
 import ai.rever.boss.cli.plugin.ValidatorTestFixturePlugin
+import ai.rever.boss.components.plugin.DependentRestartEventBus
 import ai.rever.boss.components.plugin.DynamicPluginInfo
 import ai.rever.boss.components.plugin.DynamicPluginManager
 import ai.rever.boss.plugin.api.CanUnloadResult
@@ -13,15 +14,21 @@ import ai.rever.boss.plugin.api.PluginUnloadAware
 import ai.rever.boss.plugin.api.TabRegistry
 import ai.rever.boss.plugin.sandbox.PluginSandboxManager
 import ai.rever.boss.plugin.sandbox.PluginSandboxManagerImpl
+import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancelAndJoin
+import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import java.nio.file.Files
 import java.util.jar.JarEntry
 import java.util.jar.JarOutputStream
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -156,6 +163,40 @@ class PluginRemovalAcrossWindowsTest {
         }
 
     @Test
+    fun `removal deletes both JAR paths used by open windows`() =
+        runBlocking {
+            val pluginId = "com.example.removal-with-two-jar-paths"
+            val firstJar = createRealPluginJar(pluginId)
+            val secondJar = createRealPluginJar(pluginId)
+            val firstSandbox = PluginSandboxManagerImpl()
+            val secondSandbox = PluginSandboxManagerImpl()
+            val first = loadedManager(firstSandbox)
+            val second = loadedManager(secondSandbox)
+
+            try {
+                assertTrue(first.installPlugin(firstJar.absolutePath).isSuccess)
+                assertTrue(second.installPlugin(secondJar.absolutePath).isSuccess)
+                assertTrue(firstJar.exists())
+                assertTrue(secondJar.exists())
+
+                val result = PluginRemoval.remove(pluginId, firstJar.absolutePath, first)
+
+                assertTrue(result.isSuccess, "Removal failed: ${result.exceptionOrNull()}")
+                assertFalse(first.isInstalled(pluginId))
+                assertFalse(second.isInstalled(pluginId))
+                assertFalse(firstJar.exists(), "The initiating window's JAR must be deleted")
+                assertFalse(secondJar.exists(), "The other window's JAR must also be deleted")
+            } finally {
+                first.disposeWindow()
+                second.disposeWindow()
+                firstSandbox.dispose()
+                secondSandbox.dispose()
+                firstJar.delete()
+                secondJar.delete()
+            }
+        }
+
+    @Test
     fun `another window's unload veto leaves both windows unchanged`() =
         runBlocking {
             val pluginId = "com.example.veto-across-windows"
@@ -228,6 +269,150 @@ class PluginRemovalAcrossWindowsTest {
                 assertTrue(second.isInstalled(pluginId))
                 assertTrue(jar.exists())
             } finally {
+                first.disposeWindow()
+                second.disposeWindow()
+                firstSandbox.dispose()
+                secondSandbox.dispose()
+                jar.delete()
+                dependentJar.delete()
+            }
+        }
+
+    @Test
+    fun `one failed window does not skip unloading another window`() =
+        runBlocking {
+            val pluginId = "com.example.continue-removal-after-failure"
+            val firstSandbox = PluginSandboxManagerImpl()
+            val secondSandbox = PluginSandboxManagerImpl()
+            val failingSandbox =
+                object : PluginSandboxManager by firstSandbox {
+                    override suspend fun removeSandbox(pluginId: String) {
+                        if (pluginId == "com.example.continue-removal-after-failure") {
+                            error("First window teardown failed")
+                        }
+                        firstSandbox.removeSandbox(pluginId)
+                    }
+                }
+            val first = createManager(failingSandbox)
+            val second = createManager(secondSandbox)
+            val jar = Files.createTempFile("continued-plugin-removal-", ".jar").toFile()
+
+            try {
+                addPluginState(first, pluginId)
+                addPluginState(second, pluginId)
+
+                val result = PluginRemoval.remove(pluginId, jar.absolutePath, first)
+
+                assertTrue(result.isFailure, "The first window's failure must be reported")
+                assertTrue(first.isInstalled(pluginId), "The failed window still owns the plugin")
+                assertFalse(second.isInstalled(pluginId), "Removal must still attempt the second window")
+                assertTrue(jar.exists(), "The JAR must remain while the first window owns the plugin")
+            } finally {
+                first.disposeWindow()
+                second.disposeWindow()
+                firstSandbox.dispose()
+                secondSandbox.dispose()
+                jar.delete()
+            }
+        }
+
+    @Test
+    fun `a target already unloaded by another window does not block cleanup`() =
+        runBlocking {
+            val pluginId = "com.example.disappearing-removal-target"
+            val firstSandbox = PluginSandboxManagerImpl()
+            val secondSandbox = PluginSandboxManagerImpl()
+            lateinit var second: DynamicPluginManager
+            var removedDuringFirstUnload = false
+
+            val interceptingSandbox =
+                object : PluginSandboxManager by firstSandbox {
+                    override suspend fun removeSandbox(pluginId: String) {
+                        if (pluginId == "com.example.disappearing-removal-target" && !removedDuringFirstUnload) {
+                            removedDuringFirstUnload = second.uninstallPlugin(pluginId).isSuccess
+                        }
+                        firstSandbox.removeSandbox(pluginId)
+                    }
+                }
+
+            val first = createManager(interceptingSandbox)
+            second = createManager(secondSandbox)
+            val jar = Files.createTempFile("disappearing-plugin-removal-", ".jar").toFile()
+
+            try {
+                addPluginState(first, pluginId)
+                addPluginState(second, pluginId)
+
+                val result = PluginRemoval.remove(pluginId, jar.absolutePath, first)
+
+                assertTrue(removedDuringFirstUnload, "The second window must unload during the first")
+                assertTrue(result.isSuccess, "An already-unloaded target must not fail removal")
+                assertFalse(first.isInstalled(pluginId))
+                assertFalse(second.isInstalled(pluginId))
+                assertFalse(jar.exists(), "Cleanup should run once no window owns the plugin")
+            } finally {
+                first.disposeWindow()
+                second.disposeWindow()
+                firstSandbox.dispose()
+                secondSandbox.dispose()
+                jar.delete()
+            }
+        }
+
+    @Test
+    fun `confirmed dependent allows removal across both windows`() =
+        runBlocking {
+            val pluginId = "com.example.confirmed-removal-target"
+            val dependentId = "com.example.confirmed-removal-dependent"
+            val jar = createRealPluginJar(pluginId)
+            val dependentJar = createRealPluginJar(dependentId, dependsOn = pluginId)
+            val firstSandbox = PluginSandboxManagerImpl()
+            val secondSandbox = PluginSandboxManagerImpl()
+            val first = loadedManager(firstSandbox)
+            val second = loadedManager(secondSandbox)
+            val firstRestarted = CompletableDeferred<String>()
+            val secondRestarted = CompletableDeferred<String>()
+            first.restartDependentPlugin = { id ->
+                firstRestarted.complete(id)
+            }
+            second.restartDependentPlugin = { id ->
+                secondRestarted.complete(id)
+            }
+            var promptedFor: String? = null
+            var promptedDependents: List<String> = emptyList()
+
+            // Start collecting before removal sends the prompt.
+            val responder =
+                launch(start = CoroutineStart.UNDISPATCHED) {
+                    val prompt = DependentRestartEventBus.restartPrompts.first()
+                    promptedFor = prompt.targetPluginId
+                    promptedDependents = prompt.dependents.map { it.pluginId }
+                    prompt.answer.complete(true)
+                }
+
+            try {
+                assertTrue(first.installPlugin(jar.absolutePath).isSuccess)
+                assertTrue(first.installPlugin(dependentJar.absolutePath).isSuccess)
+                assertTrue(second.installPlugin(jar.absolutePath).isSuccess)
+                assertTrue(second.installPlugin(dependentJar.absolutePath).isSuccess)
+                assertTrue(second.dependentsOf(pluginId).any { it.pluginId == dependentId })
+
+                val result =
+                    withTimeout(15_000) {
+                        PluginRemoval.remove(pluginId, jar.absolutePath, first)
+                    }
+                responder.join()
+
+                assertEquals(dependentId, withTimeout(5_000) { firstRestarted.await() })
+                assertEquals(dependentId, withTimeout(5_000) { secondRestarted.await() })
+                assertEquals(pluginId, promptedFor)
+                assertEquals(listOf(dependentId), promptedDependents)
+                assertTrue(result.isSuccess, "Confirmed removal failed: ${result.exceptionOrNull()}")
+                assertFalse(first.isInstalled(pluginId))
+                assertFalse(second.isInstalled(pluginId))
+                assertFalse(jar.exists(), "The JAR should be removed after both windows unload")
+            } finally {
+                responder.cancelAndJoin()
                 first.disposeWindow()
                 second.disposeWindow()
                 firstSandbox.dispose()

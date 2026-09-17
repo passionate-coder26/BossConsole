@@ -255,6 +255,10 @@ class DynamicPluginManager(
     @Volatile
     internal var persistedReloadJarPath: ((String) -> String?)? = null
 
+    /** Restarts a dependent through this window's plugin delegate. */
+    @Volatile
+    internal var restartDependentPlugin: (suspend (String) -> Unit)? = null
+
     companion object {
         private val companionLogger = BossLogger.forComponent("DynamicPluginManager")
 
@@ -2394,6 +2398,7 @@ class DynamicPluginManager(
         // hot swap would try to reload into it, and a process-wide holder that resolves a manager
         // lazily (HomeCatalogAccess's installer) would hand it an install that lands nowhere.
         liveManagers.removeIf { it.get() === this || it.get() == null }
+        restartDependentPlugin = null
 
         // Cancel scope
         managerScope.cancel()
