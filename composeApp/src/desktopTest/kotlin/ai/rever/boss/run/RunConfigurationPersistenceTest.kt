@@ -6,11 +6,13 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.SerializationException
 import kotlinx.serialization.json.Json
 import org.junit.jupiter.api.Test
 import java.nio.file.Files
 import java.util.UUID
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertTrue
 
 class RunConfigurationPersistenceTest {
@@ -89,7 +91,10 @@ class RunConfigurationPersistenceTest {
             )
 
             val loaded =
-                RunConfigurationManager.loadSettingsFromFile(file) { _, _ ->
+                RunConfigurationManager.loadSettingsFromFile(file) { target, _ ->
+                    // A failed write may have already damaged the file; the in-memory
+                    // result must survive either way.
+                    target.writeText("")
                     error("Simulated cleanup write failure")
                 }
 
@@ -98,11 +103,21 @@ class RunConfigurationPersistenceTest {
                 loaded.configurations.map { it.id },
                 "A failed cleanup write must not discard configurations loaded from disk",
             )
-            assertEquals(
-                2,
-                Json.decodeFromString<RunConfigurationSettings>(file.readText()).configurations.size,
-                "The failed cleanup must leave the original file intact",
-            )
+        } finally {
+            file.delete()
+        }
+    }
+
+    @Test
+    fun `a malformed settings file still reaches the startup error handler`() {
+        val file = Files.createTempFile("run-config-malformed-", ".json").toFile()
+        try {
+            file.writeText("{ not json")
+            assertFailsWith<SerializationException> {
+                RunConfigurationManager.loadSettingsFromFile(file) { _, _ ->
+                    error("must not be reached")
+                }
+            }
         } finally {
             file.delete()
         }
