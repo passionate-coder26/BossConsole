@@ -65,16 +65,7 @@ actual object RunConfigurationManager {
     private fun loadSettingsSync() {
         try {
             if (settingsFile.exists()) {
-                val content = settingsFile.readText()
-                val settings = json.decodeFromString<RunConfigurationSettings>(content)
-
-                // Deduplicate by filePath and make names unique
-                val deduplicated =
-                    settings.configurations
-                        .distinctBy { it.filePath }
-                val withUniqueNames = makeStoredNamesUnique(deduplicated)
-
-                val cleanedSettings = settings.copy(configurations = withUniqueNames)
+                val cleanedSettings = loadSettingsFromFile(settingsFile)
                 _currentSettings.value = cleanedSettings
 
                 logger.debug(
@@ -85,18 +76,6 @@ actual object RunConfigurationManager {
                         "path" to settingsFile.absolutePath,
                     ),
                 )
-
-                // Save cleaned settings if we deduplicated anything
-                if (deduplicated.size != settings.configurations.size) {
-                    val cleanedContent =
-                        json.encodeToString(RunConfigurationSettings.serializer(), cleanedSettings)
-                    settingsFile.atomicWriteText(cleanedContent)
-                    logger.debug(
-                        LogCategory.SYSTEM,
-                        "Cleaned up duplicate run configurations",
-                        mapOf("removed" to (settings.configurations.size - deduplicated.size)),
-                    )
-                }
             } else {
                 logger.debug(LogCategory.SYSTEM, "No settings file found, starting with empty configurations")
             }
@@ -104,6 +83,39 @@ actual object RunConfigurationManager {
             logger.warn(LogCategory.SYSTEM, "Failed to load run settings", error = e)
             _currentSettings.value = RunConfigurationSettings()
         }
+    }
+
+    /** Reads a file without changing the manager's state; startup is its production caller. */
+    internal fun loadSettingsFromFile(
+        file: File,
+        writeCleaned: (File, String) -> Unit = { target, content -> target.atomicWriteText(content) },
+    ): RunConfigurationSettings {
+        val settings = json.decodeFromString<RunConfigurationSettings>(file.readText())
+
+        val deduplicated = settings.configurations.distinctBy { it.filePath }
+        val withUniqueNames = makeStoredNamesUnique(deduplicated)
+        val cleanedSettings = settings.copy(configurations = withUniqueNames)
+
+        if (deduplicated.size != settings.configurations.size) {
+            try {
+                val cleanedContent =
+                    json.encodeToString(RunConfigurationSettings.serializer(), cleanedSettings)
+                writeCleaned(file, cleanedContent)
+                logger.debug(
+                    LogCategory.SYSTEM,
+                    "Cleaned up duplicate run configurations",
+                    mapOf("removed" to (settings.configurations.size - deduplicated.size)),
+                )
+            } catch (e: Exception) {
+                logger.warn(
+                    LogCategory.SYSTEM,
+                    "Could not write cleaned run configurations; keeping loaded settings",
+                    error = e,
+                )
+            }
+        }
+
+        return cleanedSettings
     }
 
     /**
