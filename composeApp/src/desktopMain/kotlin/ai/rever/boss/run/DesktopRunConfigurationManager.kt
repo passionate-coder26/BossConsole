@@ -85,7 +85,15 @@ actual object RunConfigurationManager {
         }
     }
 
-    /** Reads a file without changing the manager's state; startup is its production caller. */
+    /**
+     * Reads a file without changing the manager's state; startup is its production caller.
+     *
+     * The optional cleanup write does not hold [settingsMutex]. That is safe only because the
+     * sole production caller runs from the object's init block, where the JVM class-initialisation
+     * lock still serialises every other thread's first use, so no mutator can be in flight.
+     * Any future caller (reload, file watcher, test running alongside the concurrency tests)
+     * must hold [settingsMutex] around the write or it can clobber newer persisted state.
+     */
     internal fun loadSettingsFromFile(
         file: File,
         writeCleaned: (File, String) -> Unit = { target, content -> target.atomicWriteText(content) },
