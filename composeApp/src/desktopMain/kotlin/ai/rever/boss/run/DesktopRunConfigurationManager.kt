@@ -1,6 +1,7 @@
 package ai.rever.boss.run
 
 import ai.rever.boss.plugin.pathutils.BossDirectories
+import ai.rever.boss.utils.atomicWriteText
 import ai.rever.boss.utils.extractFileName
 import ai.rever.boss.utils.logging.BossLogger
 import ai.rever.boss.utils.logging.LogCategory
@@ -8,6 +9,8 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import java.io.File
@@ -18,11 +21,26 @@ import java.io.File
  */
 actual object RunConfigurationManager {
     private val logger = BossLogger.forComponent("RunConfigurationManager")
-    private val settingsFile = BossDirectories.resolve("run-configurations.json")
+
+    /**
+     * The production settings path, captured once so [resetForTesting] can restore it without
+     * re-deriving the literal at every call site.
+     */
+    private val defaultSettingsFile = BossDirectories.resolve("run-configurations.json")
+
+    /**
+     * Overridable so hermetic tests exercise the real read/write path without touching
+     * `~/.boss`. Restored by [resetForTesting] callers; production code never reassigns it.
+     */
+    @Volatile
+    internal var settingsFile: File = defaultSettingsFile
     private val json =
         Json {
             prettyPrint = true
             ignoreUnknownKeys = true
+            // RunConfiguration.timestamp has a time-varying default. Encoding defaults keeps a
+            // configuration saved in its creation millisecond from decoding later with load time.
+            encodeDefaults = true
         }
 
     /** The trailing " (...)" group of a configuration name, which disambiguation rewrites. */
@@ -34,6 +52,7 @@ actual object RunConfigurationManager {
     private val detector = DesktopMainFunctionDetector()
 
     private val _currentSettings = MutableStateFlow(RunConfigurationSettings())
+    private val settingsMutex = Mutex()
     actual val currentSettings: StateFlow<RunConfigurationSettings> = _currentSettings.asStateFlow()
 
     private val _detectedConfigurations = MutableStateFlow<List<RunConfiguration>>(emptyList())
@@ -54,23 +73,14 @@ actual object RunConfigurationManager {
     }
 
     /**
-     * Load settings synchronously on startup.
+     * Load settings synchronously on startup or test reset.
      * Note: Does NOT auto-select any configuration - user must explicitly select one.
      * Existing configs are deduplicated and names made unique.
      */
-    private fun loadSettingsSync() {
+    internal fun loadSettingsSync() {
         try {
             if (settingsFile.exists()) {
-                val content = settingsFile.readText()
-                val settings = json.decodeFromString<RunConfigurationSettings>(content)
-
-                // Deduplicate by filePath and make names unique
-                val deduplicated =
-                    settings.configurations
-                        .distinctBy { it.filePath }
-                val withUniqueNames = makeStoredNamesUnique(deduplicated)
-
-                val cleanedSettings = settings.copy(configurations = withUniqueNames)
+                val cleanedSettings = loadSettingsFromFile(settingsFile)
                 _currentSettings.value = cleanedSettings
 
                 logger.debug(
@@ -81,23 +91,74 @@ actual object RunConfigurationManager {
                         "path" to settingsFile.absolutePath,
                     ),
                 )
-
-                // Save cleaned settings if we deduplicated anything
-                if (deduplicated.size != settings.configurations.size) {
-                    settingsFile.writeText(json.encodeToString(RunConfigurationSettings.serializer(), cleanedSettings))
-                    logger.debug(
-                        LogCategory.SYSTEM,
-                        "Cleaned up duplicate run configurations",
-                        mapOf("removed" to (settings.configurations.size - deduplicated.size)),
-                    )
-                }
             } else {
+                // A missing file is not an error, but a reset must leave the manager empty
+                // rather than whatever a previous load (or test) left behind.
+                _currentSettings.value = RunConfigurationSettings()
                 logger.debug(LogCategory.SYSTEM, "No settings file found, starting with empty configurations")
             }
         } catch (e: Exception) {
             logger.warn(LogCategory.SYSTEM, "Failed to load run settings", error = e)
             _currentSettings.value = RunConfigurationSettings()
         }
+    }
+
+    /**
+     * Reset manager state and optionally redirect [settingsFile] to [testFile]; with no
+     * argument, restore [defaultSettingsFile]. Call only when no mutation is in flight - the
+     * load re-reads [settingsFile] without [settingsMutex] (see [loadSettingsFromFile]) - and
+     * always call with no argument before finishing, so the singleton is left where the app
+     * and other tests expect it.
+     */
+    internal fun resetForTesting(testFile: File? = null) {
+        settingsFile = testFile ?: defaultSettingsFile
+        _detectedConfigurations.value = emptyList()
+        _isScanning.value = false
+        _lastError.value = null
+        loadSettingsSync()
+    }
+
+    /**
+     * Reads a file without changing the manager's state; startup is its production caller.
+     *
+     * The optional cleanup write does not hold [settingsMutex]. That is safe only because
+     * every current caller runs with no mutation in flight: the production caller runs from
+     * the object's init block, where the JVM class-initialisation lock still serialises every
+     * other thread's first use, and the test caller [resetForTesting] is only ever invoked
+     * between tests (its KDoc states the same precondition).
+     * Any future caller (reload, file watcher) must hold [settingsMutex] around the write or
+     * it can clobber newer persisted state.
+     */
+    internal fun loadSettingsFromFile(
+        file: File,
+        writeCleaned: (File, String) -> Unit = { target, content -> target.atomicWriteText(content) },
+    ): RunConfigurationSettings {
+        val settings = json.decodeFromString<RunConfigurationSettings>(file.readText())
+
+        val deduplicated = settings.configurations.distinctBy { it.filePath }
+        val withUniqueNames = makeStoredNamesUnique(deduplicated)
+        val cleanedSettings = settings.copy(configurations = withUniqueNames)
+
+        if (deduplicated.size != settings.configurations.size) {
+            try {
+                val cleanedContent =
+                    json.encodeToString(RunConfigurationSettings.serializer(), cleanedSettings)
+                writeCleaned(file, cleanedContent)
+                logger.debug(
+                    LogCategory.SYSTEM,
+                    "Cleaned up duplicate run configurations",
+                    mapOf("removed" to (settings.configurations.size - deduplicated.size)),
+                )
+            } catch (e: Exception) {
+                logger.warn(
+                    LogCategory.SYSTEM,
+                    "Could not write cleaned run configurations; keeping loaded settings",
+                    error = e,
+                )
+            }
+        }
+
+        return cleanedSettings
     }
 
     /**
@@ -208,31 +269,35 @@ actual object RunConfigurationManager {
      * - Generates unique name with number suffix if name already exists
      */
     actual suspend fun addConfiguration(config: RunConfiguration) {
-        val current = _currentSettings.value
+        settingsMutex.withLock {
+            val current = _currentSettings.value
 
-        // Check if configuration with same filePath already exists
-        val existingByPath = current.configurations.find { it.filePath == config.filePath }
-        if (existingByPath != null) {
-            logger.debug(LogCategory.SYSTEM, "Configuration already exists, skipping", mapOf("filePath" to config.filePath))
-            return
-        }
-
-        // Generate unique name if needed
-        val uniqueName = generateUniqueName(config.name, current.configurations.map { it.name })
-        val configWithUniqueName =
-            if (uniqueName != config.name) {
-                config.copy(name = uniqueName)
-            } else {
-                config
+            val existingByPath = current.configurations.find { it.filePath == config.filePath }
+            if (existingByPath != null) {
+                logger.debug(
+                    LogCategory.SYSTEM,
+                    "Configuration already exists, skipping",
+                    mapOf("filePath" to config.filePath),
+                )
+                return@withLock
             }
 
-        val updated =
-            current.copy(
-                configurations = current.configurations + configWithUniqueName,
-            )
-        _currentSettings.value = updated
-        saveSettings()
-        logger.debug(LogCategory.SYSTEM, "Added run configuration", mapOf("name" to configWithUniqueName.name))
+            val uniqueName = generateUniqueName(config.name, current.configurations.map { it.name })
+            val configWithUniqueName =
+                if (uniqueName != config.name) {
+                    config.copy(name = uniqueName)
+                } else {
+                    config
+                }
+
+            val updated =
+                current.copy(
+                    configurations = current.configurations + configWithUniqueName,
+                )
+            _currentSettings.value = updated
+            persistSettings(updated)
+            logger.debug(LogCategory.SYSTEM, "Added run configuration", mapOf("name" to configWithUniqueName.name))
+        }
     }
 
     /**
@@ -261,31 +326,35 @@ actual object RunConfigurationManager {
      * Remove a run configuration by ID.
      */
     actual suspend fun removeConfiguration(configId: String) {
-        val current = _currentSettings.value
-        val updated =
-            current.copy(
-                configurations = current.configurations.filter { it.id != configId },
-                lastUsedConfigId = if (current.lastUsedConfigId == configId) null else current.lastUsedConfigId,
-                recentConfigIds = current.recentConfigIds.filter { it != configId },
-            )
-        _currentSettings.value = updated
-        saveSettings()
+        settingsMutex.withLock {
+            val current = _currentSettings.value
+            val updated =
+                current.copy(
+                    configurations = current.configurations.filter { it.id != configId },
+                    lastUsedConfigId = if (current.lastUsedConfigId == configId) null else current.lastUsedConfigId,
+                    recentConfigIds = current.recentConfigIds.filter { it != configId },
+                )
+            _currentSettings.value = updated
+            persistSettings(updated)
+        }
     }
 
     /**
      * Update an existing run configuration.
      */
     actual suspend fun updateConfiguration(config: RunConfiguration) {
-        val current = _currentSettings.value
-        val updated =
-            current.copy(
-                configurations =
-                    current.configurations.map {
-                        if (it.id == config.id) config else it
-                    },
-            )
-        _currentSettings.value = updated
-        saveSettings()
+        settingsMutex.withLock {
+            val current = _currentSettings.value
+            val updated =
+                current.copy(
+                    configurations =
+                        current.configurations.map {
+                            if (it.id == config.id) config else it
+                        },
+                )
+            _currentSettings.value = updated
+            persistSettings(updated)
+        }
     }
 
     /**
@@ -299,10 +368,15 @@ actual object RunConfigurationManager {
      * Save current settings to disk.
      */
     actual suspend fun saveSettings() =
+        settingsMutex.withLock {
+            persistSettings(_currentSettings.value)
+        }
+
+    private suspend fun persistSettings(settings: RunConfigurationSettings) =
         withContext(Dispatchers.IO) {
             try {
-                val content = json.encodeToString(RunConfigurationSettings.serializer(), _currentSettings.value)
-                settingsFile.writeText(content)
+                val content = json.encodeToString(RunConfigurationSettings.serializer(), settings)
+                settingsFile.atomicWriteText(content)
                 logger.debug(LogCategory.SYSTEM, "Run settings saved", mapOf("path" to settingsFile.absolutePath))
             } catch (e: Exception) {
                 logger.warn(LogCategory.SYSTEM, "Failed to save run settings", error = e)

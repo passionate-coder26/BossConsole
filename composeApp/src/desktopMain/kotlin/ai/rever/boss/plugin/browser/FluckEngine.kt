@@ -2898,6 +2898,22 @@ object FluckEngine {
 
                 // Intercept main modifier + key shortcuts
                 if (isMainModifierDown && !modifiers.isShiftDown && !modifiers.isAltDown) {
+                    // The native page also receives Cmd+P on macOS without a usable AWT
+                    // accelerator event. Handle it here on every platform, like reload below.
+                    if (keyCode == com.teamdev.jxbrowser.ui.KeyCode.KEY_CODE_P &&
+                        usesNativePrintChord(ai.rever.boss.keymap.KeymapSettingsManager.currentSettings.value)
+                    ) {
+                        shortcutWindowId?.let {
+                            ai.rever.boss.window.AWTKeyboardInterceptor
+                                .cancelPendingNativePrint(it)
+                        }
+                        if (!browser.isClosed) {
+                            browser.mainFrame().ifPresent { it.executeJavaScript<Any>(PRINT_BROWSER_SCRIPT) }
+                        }
+                        return@PressKeyCallback com.teamdev.jxbrowser.browser.callback.input.PressKeyCallback.Response
+                            .suppress()
+                    }
+
                     // Reload is BROWSER-scoped and this callback already fires for the browser that
                     // received the key, so reload it directly instead of routing through the
                     // focused WINDOW. MenuActionsHandler.triggerReloadBrowser only emits an event

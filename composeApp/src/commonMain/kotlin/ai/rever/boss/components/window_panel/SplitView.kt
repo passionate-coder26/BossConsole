@@ -902,10 +902,11 @@ class SplitViewState(
             ?: DefaultWorkingDirectory.resolve(projectPath)
     }
 
-    private fun openTerminalInActivePanelNow(
+    @Suppress("ReturnCount")
+    internal fun openTerminalInActivePanelNow(
         command: String?,
         workingDirectory: String?,
-    ) {
+    ): TerminalTabInfo? {
         val activeComponent = getActiveTabsComponent()
         val terminalWorkingDir = terminalWorkingDirectory(workingDirectory)
 
@@ -916,7 +917,7 @@ class SplitViewState(
             val firstPanel = getAllPanels().firstOrNull()
             if (firstPanel == null) {
                 splitViewLogger.error(LogCategory.UI, "No panels available to create terminal tab")
-                return
+                return null
             }
 
             val component = firstPanel.tabsComponent
@@ -946,10 +947,11 @@ class SplitViewState(
                         emptyMap()
                     },
                 )
+                return terminalTab
             } else {
                 splitViewLogger.error(LogCategory.UI, "Failed to add terminal tab to panel")
+                return null
             }
-            return
         }
 
         // Create new terminal tab in active panel
@@ -966,8 +968,10 @@ class SplitViewState(
         if (tabIndex >= 0) {
             activeComponent.selectTab(tabIndex)
             splitViewLogger.debug(LogCategory.UI, "Terminal tab created", if (command != null) mapOf("command" to command) else emptyMap())
+            return terminalTab
         } else {
             splitViewLogger.error(LogCategory.UI, "Failed to create terminal tab")
+            return null
         }
     }
 

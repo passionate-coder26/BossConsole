@@ -194,7 +194,10 @@ class ChildProcessConnection(
      */
     fun connectToService(serviceName: String): BossIpcClient? {
         if (serviceName !in serviceAddresses) return null
-        error("Direct peer IPC requires a host-authorized channel; request this service through the host")
+        LoggerFactory
+            .getLogger(ChildProcessConnection::class.java)
+            .warn("Direct peer IPC is unavailable; request this service through the host")
+        return null
     }
 
     /**

@@ -2,7 +2,16 @@ name: Authenticated IPC boundaries
 
 on:
   push:
-    branches: ['fix/security-authenticated-ipc']
+    branches: [main, develop, dev]
+    paths:
+      - 'modules/boss-ipc/**'
+      - 'modules/boss-process-manager/**'
+      - 'modules/boss-app-terminal/**'
+      - 'modules/boss-orchestrator/**'
+      - 'composeApp/src/desktopMain/kotlin/ai/rever/boss/kernel/**'
+      - 'composeApp/src/desktopMain/kotlin/ai/rever/boss/components/plugin/OutOfProcessPluginSpawnerImpl.kt'
+      - 'composeApp/src/desktopTest/kotlin/ai/rever/boss/kernel/**'
+      - '.github/workflows/authenticated-ipc.yml'
   pull_request:
     branches: [main, dev]
     paths:

@@ -24,6 +24,13 @@ import kotlinx.coroutines.flow.updateAndGet
 object MenuActionsHandler {
     private val logger = BossLogger.forComponent("MenuActionsHandler")
 
+    private val _goHomeEvents = MutableSharedFlow<String>(extraBufferCapacity = 10)
+    val goHomeEvents: SharedFlow<String> = _goHomeEvents.asSharedFlow()
+
+    fun triggerGoHome(windowId: String) {
+        _goHomeEvents.tryEmit(windowId)
+    }
+
     private val _newTabEvents = MutableSharedFlow<String>(extraBufferCapacity = 10)
     val newTabEvents: SharedFlow<String> = _newTabEvents.asSharedFlow()
 
@@ -74,6 +81,13 @@ object MenuActionsHandler {
 
     private val _browserDevToolsEvents = MutableSharedFlow<String>(extraBufferCapacity = 10)
     val browserDevToolsEvents: SharedFlow<String> = _browserDevToolsEvents.asSharedFlow()
+
+    private val _printBrowserEvents = MutableSharedFlow<String>(extraBufferCapacity = 10)
+    val printBrowserEvents: SharedFlow<String> = _printBrowserEvents.asSharedFlow()
+
+    fun triggerPrintBrowser(windowId: String) {
+        _printBrowserEvents.tryEmit(windowId)
+    }
 
     private val _zoomInEvents = MutableSharedFlow<String>(extraBufferCapacity = 10)
     val zoomInEvents: SharedFlow<String> = _zoomInEvents.asSharedFlow()

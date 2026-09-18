@@ -89,6 +89,14 @@ object AWTKeyboardInterceptor {
     // dispatch and focus changes run on the EDT; shutdown also clears this state.
     internal val pendingShortcuts = ConcurrentHashMap<Int, PendingShortcut>()
 
+    /** A native browser print already handled this press; a later AWT release must not print twice. */
+    internal fun cancelPendingNativePrint(windowId: String) {
+        val pending = pendingShortcuts[KeyEvent.VK_P] ?: return
+        if (pending.windowId == windowId && pending.hostBinding?.binding?.actionId == KeymapActions.BROWSER_PRINT) {
+            pendingShortcuts.remove(KeyEvent.VK_P, pending)
+        }
+    }
+
     private var focusListener: java.beans.PropertyChangeListener? = null
 
     /**
@@ -882,6 +890,11 @@ object AWTKeyboardInterceptor {
 
             KeymapActions.WINDOW_CLOSE -> {
                 if (perform) WindowOperations.closeWindow(windowId)
+                true
+            }
+
+            KeymapActions.BROWSER_PRINT -> {
+                if (perform) MenuActionsHandler.triggerPrintBrowser(windowId)
                 true
             }
 

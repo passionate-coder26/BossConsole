@@ -266,6 +266,13 @@ Scoped deliberately: this covers the **Docker and Kubernetes plugins only**, bec
 
 *…and more in [boss-plugins](https://github.com/risa-labs-inc/boss-plugins), including analytics, fluck-agent (chat about the current page), and hardware integrations.*
 
+### Community plugins (third-party, not audited)
+Not published by Risa Labs and not in the Toolbox store. Install from the plugin's own repo and read its stated limitations first.
+
+| Plugin | What it does |
+|--------|--------------|
+| **[Agent Guardrail](https://github.com/krish57-bit/boss-guardrail-plugin)** | Adds a `guardrail_run` MCP tool that pattern-matches agent shell commands for destructive shapes (`rm -rf`, `git push --force`, `curl \| bash`) and asks for approval in a BOSS dialog before running them. Only covers commands sent through that tool. Best-effort and bypassable, not a substitute for the per-tool MCP kill-switch |
+
 ---
 
 ## BossTerm - a terminal you can share to any device
@@ -458,6 +465,7 @@ BOSS is developed in the open, end to end - the host app, the plugin platform, t
 - **Security** - [secret-manager](https://github.com/risa-labs-inc/boss-plugin-secret-manager)
 - **Productivity** - [bookmarks](https://github.com/risa-labs-inc/boss-plugin-bookmarks) · [downloads](https://github.com/risa-labs-inc/boss-plugin-downloads) · [topofmind](https://github.com/risa-labs-inc/boss-plugin-topofmind)
 - **Admin** - [admin-role-management](https://github.com/risa-labs-inc/boss-plugin-admin-role-management) · [role-creation](https://github.com/risa-labs-inc/boss-plugin-role-creation)
+- **Community (third-party, not audited)** - [boss-guardrail-plugin](https://github.com/krish57-bit/boss-guardrail-plugin)
 
 **Releases** - [**BossConsole-Releases**](https://github.com/risa-labs-inc/BossConsole-Releases) hosts the pre-built installers for every platform.
 

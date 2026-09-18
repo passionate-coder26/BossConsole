@@ -57,6 +57,13 @@ data class McpApprovalRequest(
     val arguments: Map<String, Any?>,
     val timeoutMs: Long,
     val riskAssessment: McpRiskAssessment? = null,
+    /**
+     * The tool's own [ai.rever.boss.plugin.api.McpToolDefinition.readOnly] declaration, captured
+     * at invocation so the dialog's mutating-vs-read labeling cannot be spoofed by an innocent
+     * tool name the way the policy gate could before #804. Null when no definition was in hand
+     * when the request was raised, which leaves the name-only catalog to label it.
+     */
+    val declaredReadOnly: Boolean? = null,
     val requestedAt: Long = System.currentTimeMillis(),
     val deferred: CompletableDeferred<McpApprovalDecision> = CompletableDeferred(),
 )
@@ -87,13 +94,16 @@ open class McpApprovalBus(
      * Suspends the calling coroutine until the operator answers via the UI
      * or [timeoutMs] elapses (in which case it fails closed).
      */
-    @Suppress("ReturnCount") // Both active and delivery queues must reject overflow before awaiting an answer.
+    // Queue overflow needs its own returns; the request carries the tool's full approval
+    // context, from name and provider to its own read-only declaration.
+    @Suppress("ReturnCount", "LongParameterList")
     suspend fun requestApproval(
         toolName: String,
         providerId: String,
         arguments: Map<String, Any?>,
         timeoutMs: Long = defaultTimeoutMs,
         riskAssessment: McpRiskAssessment? = null,
+        declaredReadOnly: Boolean? = null,
     ): McpApprovalDecision {
         val request =
             McpApprovalRequest(
@@ -102,6 +112,7 @@ open class McpApprovalBus(
                 arguments = McpArgumentSanitizer.sanitize(arguments),
                 timeoutMs = timeoutMs,
                 riskAssessment = riskAssessment,
+                declaredReadOnly = declaredReadOnly,
             )
 
         synchronized(lock) {

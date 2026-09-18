@@ -1,6 +1,7 @@
 package ai.rever.boss.components.window_panel.components.main_window_panels
 
 import ai.rever.boss.components.bars.vertical.VerticalBar
+import ai.rever.boss.components.home.isHomeTab
 import ai.rever.boss.components.model.TabDraggableComponent
 import ai.rever.boss.components.model.TabDropResult
 import ai.rever.boss.components.overlays.contextMenu
@@ -632,6 +633,7 @@ private fun WindowTabBarFavorites(
 ) {
     TabBarFavorites(
         bookmarks = lead.state.favorites,
+        homeSelected = lead.state.tabs.isEmpty() || isHomeTab(lead.state.tabs.getOrNull(lead.state.activeIndex)),
         pluginInstalled = lead.state.bookmarksInstalled,
         apiReachable = lead.state.bookmarksApiReachable,
         onOpen = lead.state.openFavorite,

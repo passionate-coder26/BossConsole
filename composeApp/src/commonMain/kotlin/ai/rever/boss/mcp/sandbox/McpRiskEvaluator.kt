@@ -133,6 +133,10 @@ class DefaultMcpRiskEvaluator : McpRiskEvaluator {
                 "send_input",
                 "terminal_exec",
                 "k8s_exec",
+                // The MCP workspace provider's terminal tool opens a real shell; its
+                // `command` argument is the same argument name evaluateShellCommand reads.
+                "open_terminal",
+                "terminal_open",
             )
 
         private val SECRET_MANAGEMENT_TOOLS =

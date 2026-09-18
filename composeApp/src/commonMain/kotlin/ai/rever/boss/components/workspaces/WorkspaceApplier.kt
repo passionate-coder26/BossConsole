@@ -140,8 +140,12 @@ suspend fun applyWorkspace(
  * registration timeout elapses. On timeout the apply proceeds anyway — tabs of
  * still-missing types are skipped exactly as before, but a warning is logged
  * instead of failing silently.
+ *
+ * internal because the MCP workspace provider needs the same gate for its direct
+ * terminal open: `openTerminalInActivePanelNow` drops a tab whose type has no
+ * factory yet, which is exactly the cold start that tool exists for.
  */
-private suspend fun TabRegistry.awaitTabTypes(typeIds: Set<TabTypeId>) {
+internal suspend fun TabRegistry.awaitTabTypes(typeIds: Set<TabTypeId>) {
     fun missing() = typeIds.filterNot { isRegistered(it) }
     if (missing().isEmpty()) return
 

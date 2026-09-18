@@ -2,7 +2,12 @@ name: Filesystem resource limits
 
 on:
   push:
-    branches: ['fix/security-filesystem-limits']
+    branches: [main, develop, dev]
+    paths:
+      - 'modules/boss-service-filesystem/**'
+      - 'modules/boss-ipc/src/main/proto/boss/ipc/v1/services/filesystem.proto'
+      - 'plugin-platform/plugin-api-ipc/**'
+      - '.github/workflows/filesystem-limits.yml'
   pull_request:
     paths:
       - 'modules/boss-service-filesystem/**'

@@ -72,7 +72,12 @@ class StateServiceImpl : StateServiceGrpcKt.StateServiceCoroutineImplBase() {
         return update(request, caller.processId, caller.instanceId) {
             val currentCaller = IpcCall.current()
             stateStore[request.key]?.let { existing ->
-                val owner = existing.ownerInstance == currentCaller.instanceId
+                // The registry admits only one current incarnation per process ID. A replacement
+                // may overwrite its old key, but cannot read the previous private value or
+                // use a stale optimistic version to obtain it through the conflict response.
+                val owner =
+                    existing.ownerInstance == currentCaller.instanceId ||
+                        (existing.ownerProcess == currentCaller.processId && request.expectedVersion == 0L)
                 IpcCall.requirePermission(
                     owner || currentCaller.authority == ProcessAuthority.HOST,
                 )

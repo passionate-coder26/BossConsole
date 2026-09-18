@@ -819,6 +819,9 @@ fun BossTopRightBar(
 ) {
     val currentUser by AuthService.currentUser.collectAsState()
 
+    // Browser Zoom Badge (appears when active browser zoom != 100%)
+    BrowserZoomBadge()
+
     // Show user email if logged in
     currentUser?.let { user ->
         Text(

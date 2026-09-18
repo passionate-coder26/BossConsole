@@ -569,6 +569,22 @@ class WorkspaceManager {
         }
 
     /**
+     * Registers [workspace] in the in-memory picker list without touching disk.
+     *
+     * For callers that persist the workspace file through their own
+     * [WorkspaceFileManager] - the MCP `create_workspace` tool writes through the provider's
+     * file manager, the same door `close_workspace` deletes through, and in tests that is a
+     * directory the manager's own file manager does not see - but still want the Space visible
+     * in the picker for this session. [importWorkspace] would double-write the file.
+     */
+    fun registerWorkspace(workspace: LayoutWorkspace) {
+        val workspaces = _workspaces.value.toMutableList()
+        val existingIndex = workspaces.indexOfFirst { it.id == workspace.id }
+        if (existingIndex >= 0) workspaces[existingIndex] = workspace else workspaces.add(workspace)
+        _workspaces.value = workspaces
+    }
+
+    /**
      * Set callback for when a workspace is deleted
      */
     fun setOnWorkspaceDeleted(callback: (String) -> Unit) {

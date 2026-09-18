@@ -43,8 +43,14 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
 
+/**
+ * A View-bucket tool: not classified mutating by [McpMutatingToolCatalog.isMutating], which
+ * weighs the provider's own [McpToolIdentity.readOnly] declaration alongside the name (#804),
+ * and below HIGH risk. The catalog is the single classification point - this does not
+ * re-derive mutating status from the declaration separately, so the two can never diverge.
+ */
 internal fun McpToolIdentity.isViewTool(): Boolean =
-    readOnly && !McpMutatingToolCatalog.isMutating(toolName) && policyRisk(this).level < McpRiskLevel.HIGH
+    !McpMutatingToolCatalog.isMutating(toolName, readOnly) && policyRisk(this).level < McpRiskLevel.HIGH
 
 internal fun sectionSelection(
     tools: List<McpToolIdentity>,

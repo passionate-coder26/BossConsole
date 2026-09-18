@@ -2,7 +2,12 @@ package ai.rever.boss.plugin.launchpad
 
 import java.io.File
 import java.io.IOException
+import java.nio.file.FileVisitResult
 import java.nio.file.Files
+import java.nio.file.LinkOption
+import java.nio.file.Path
+import java.nio.file.SimpleFileVisitor
+import java.nio.file.attribute.BasicFileAttributes
 import java.nio.file.attribute.PosixFilePermission
 
 /**
@@ -52,8 +57,7 @@ object PluginScaffolder {
                     val path = targetDir.absolutePath
                     error("Target directory '$path' exists and is not empty. Use --force to overwrite.")
                 }
-                assertSafeToPurge(targetDir)
-                existingFiles.forEach { it.deleteRecursively() }
+                purgeExistingFiles(targetDir, existingFiles)
             }
         }
 
@@ -303,6 +307,8 @@ object PluginScaffolder {
         dependencies {
             compileOnly("ai.rever.boss:boss-plugin-api:$apiVersion")
             testImplementation("ai.rever.boss:boss-plugin-api:$apiVersion")
+            compileOnly("org.slf4j:slf4j-api:2.0.18")
+            testImplementation("org.slf4j:slf4j-api:2.0.18")
             implementation("org.jetbrains.kotlinx:kotlinx-coroutines-core:1.8.1")
             implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.7.3")
             testImplementation(kotlin("test"))
@@ -343,14 +349,21 @@ object PluginScaffolder {
                 import ai.rever.boss.plugin.api.McpToolResult
                 import ai.rever.boss.plugin.api.Plugin
                 import ai.rever.boss.plugin.api.PluginContext
+                import ai.rever.boss.plugin.logging.BossLogger
+                import ai.rever.boss.plugin.logging.LogCategory
 
                 class $className : Plugin {
                     override val pluginId: String = "$pluginId"
                     override val displayName: String = "$escapedName"
 
+                    // Note: Templates avoid the Compose compiler plugin, so no ${'$'}stable field is synthesised
+                    // on the plugin class. If Compose is added later for UI components, keep the logger as a
+                    // top-level property or resolve per-call to avoid Compose stability metadata linkage hazards.
+                    private val logger = BossLogger.forComponent("$escapedName")
                     private var toolProvider: McpToolProvider? = null
 
                     override fun register(context: PluginContext) {
+                        logger.info(LogCategory.GENERAL, "Registering $escapedName ($pluginId)")
                         val provider =
                             object : McpToolProvider {
                                 override val providerId: String = pluginId
@@ -362,6 +375,7 @@ object PluginScaffolder {
                                             description = "Executes $escapedName action tool",
                                             handler =
                                                 McpToolHandler { _ ->
+                                                    logger.info(LogCategory.GENERAL, "Executing action tool for $escapedName")
                                                     McpToolResult("Action executed successfully for $escapedName")
                                                 },
                                         ),
@@ -373,7 +387,7 @@ object PluginScaffolder {
 
                     override fun dispose() {
                         toolProvider = null
-                        println("Disposed $escapedName ($pluginId)")
+                        logger.info(LogCategory.GENERAL, "Disposed $escapedName ($pluginId)")
                     }
                 }
                 """.trimIndent() + "\n"
@@ -388,14 +402,21 @@ object PluginScaffolder {
                 import ai.rever.boss.plugin.api.PanelMenuItem
                 import ai.rever.boss.plugin.api.Plugin
                 import ai.rever.boss.plugin.api.PluginContext
+                import ai.rever.boss.plugin.logging.BossLogger
+                import ai.rever.boss.plugin.logging.LogCategory
 
                 class $className : Plugin {
                     override val pluginId: String = "$pluginId"
                     override val displayName: String = "$escapedName"
 
+                    // Note: Templates avoid the Compose compiler plugin, so no ${'$'}stable field is synthesised
+                    // on the plugin class. If Compose is added later for UI components, keep the logger as a
+                    // top-level property or resolve per-call to avoid Compose stability metadata linkage hazards.
+                    private val logger = BossLogger.forComponent("$escapedName")
                     private var menuContribution: PanelMenuContribution? = null
 
                     override fun register(context: PluginContext) {
+                        logger.info(LogCategory.GENERAL, "Registering $escapedName ($pluginId)")
                         val contribution =
                             object : PanelMenuContribution {
                                 override val contributionId: String = "$pluginId.menu"
@@ -414,7 +435,7 @@ object PluginScaffolder {
                                     itemId: String,
                                     windowId: String?,
                                 ) {
-                                    println("Panel menu item clicked: ${'$'}itemId for $escapedName")
+                                    logger.info(LogCategory.UI, "Panel menu item clicked: ${'$'}itemId for $escapedName")
                                 }
                             }
                         menuContribution = contribution
@@ -423,7 +444,7 @@ object PluginScaffolder {
 
                     override fun dispose() {
                         menuContribution = null
-                        println("Disposed $escapedName ($pluginId)")
+                        logger.info(LogCategory.GENERAL, "Disposed $escapedName ($pluginId)")
                     }
                 }
                 """.trimIndent() + "\n"
@@ -435,6 +456,8 @@ object PluginScaffolder {
 
                 import ai.rever.boss.plugin.api.Plugin
                 import ai.rever.boss.plugin.api.PluginContext
+                import ai.rever.boss.plugin.logging.BossLogger
+                import ai.rever.boss.plugin.logging.LogCategory
                 import kotlinx.coroutines.Job
                 import kotlinx.coroutines.delay
                 import kotlinx.coroutines.isActive
@@ -444,15 +467,19 @@ object PluginScaffolder {
                     override val pluginId: String = "$pluginId"
                     override val displayName: String = "$escapedName"
 
+                    // Note: Templates avoid the Compose compiler plugin, so no ${'$'}stable field is synthesised
+                    // on the plugin class. If Compose is added later for UI components, keep the logger as a
+                    // top-level property or resolve per-call to avoid Compose stability metadata linkage hazards.
+                    private val logger = BossLogger.forComponent("$escapedName")
                     private var workerJob: Job? = null
 
                     override fun register(context: PluginContext) {
                         workerJob =
                             context.pluginScope.launch {
-                                println("Background service started for $escapedName ($pluginId)")
+                                logger.info(LogCategory.GENERAL, "Background service started for $escapedName ($pluginId)")
                                 while (isActive) {
                                     delay(30_000)
-                                    println("Background heartbeat for $escapedName")
+                                    logger.debug(LogCategory.GENERAL, "Background heartbeat for $escapedName")
                                 }
                             }
                     }
@@ -460,7 +487,7 @@ object PluginScaffolder {
                     override fun dispose() {
                         workerJob?.cancel()
                         workerJob = null
-                        println("Background service stopped for $escapedName ($pluginId)")
+                        logger.info(LogCategory.GENERAL, "Background service stopped for $escapedName ($pluginId)")
                     }
                 }
                 """.trimIndent() + "\n"
@@ -479,6 +506,8 @@ object PluginScaffolder {
                 import ai.rever.boss.plugin.api.PanelMenuItem
                 import ai.rever.boss.plugin.api.Plugin
                 import ai.rever.boss.plugin.api.PluginContext
+                import ai.rever.boss.plugin.logging.BossLogger
+                import ai.rever.boss.plugin.logging.LogCategory
                 import kotlinx.coroutines.Job
                 import kotlinx.coroutines.delay
                 import kotlinx.coroutines.isActive
@@ -488,11 +517,16 @@ object PluginScaffolder {
                     override val pluginId: String = "$pluginId"
                     override val displayName: String = "$escapedName"
 
+                    // Note: Templates avoid the Compose compiler plugin, so no ${'$'}stable field is synthesised
+                    // on the plugin class. If Compose is added later for UI components, keep the logger as a
+                    // top-level property or resolve per-call to avoid Compose stability metadata linkage hazards.
+                    private val logger = BossLogger.forComponent("$escapedName")
                     private var toolProvider: McpToolProvider? = null
                     private var menuContribution: PanelMenuContribution? = null
                     private var workerJob: Job? = null
 
                     override fun register(context: PluginContext) {
+                        logger.info(LogCategory.GENERAL, "Registering full plugin $escapedName ($pluginId)")
                         val provider =
                             object : McpToolProvider {
                                 override val providerId: String = pluginId
@@ -504,6 +538,7 @@ object PluginScaffolder {
                                             description = "Executes $escapedName action tool",
                                             handler =
                                                 McpToolHandler { _ ->
+                                                    logger.info(LogCategory.GENERAL, "Executing action tool for $escapedName")
                                                     McpToolResult("Action executed successfully for $escapedName")
                                                 },
                                         ),
@@ -530,7 +565,7 @@ object PluginScaffolder {
                                     itemId: String,
                                     windowId: String?,
                                 ) {
-                                    println("Panel menu item clicked: ${'$'}itemId for $escapedName")
+                                    logger.info(LogCategory.UI, "Panel menu item clicked: ${'$'}itemId for $escapedName")
                                 }
                             }
                         menuContribution = contribution
@@ -538,7 +573,7 @@ object PluginScaffolder {
 
                         workerJob =
                             context.pluginScope.launch {
-                                println("Full plugin service started for $escapedName ($pluginId)")
+                                logger.info(LogCategory.GENERAL, "Full plugin service started for $escapedName ($pluginId)")
                                 while (isActive) {
                                     delay(30_000)
                                 }
@@ -550,7 +585,7 @@ object PluginScaffolder {
                         workerJob = null
                         toolProvider = null
                         menuContribution = null
-                        println("Disposed full plugin $escapedName ($pluginId)")
+                        logger.info(LogCategory.GENERAL, "Disposed full plugin $escapedName ($pluginId)")
                     }
                 }
                 """.trimIndent() + "\n"
@@ -730,6 +765,86 @@ object PluginScaffolder {
         require(hasPluginJson || hasGradleBuild) {
             "Refusing to purge non-plugin directory in --force mode: ${targetDir.absolutePath}. " +
                 "Directory does not contain plugin.json or build.gradle.kts. Clear it manually if intended."
+        }
+    }
+
+    /**
+     * Identifies a directory as a plugin project for [assertSafeToPurge]. These entries are purged
+     * last, and are skipped entirely if any other purge failure occurred, so a partially cleared
+     * directory stays recognizable and a --force retry is not refused as a non-plugin directory.
+     */
+    private val pluginMarkerNames = setOf("plugin.json", "build.gradle.kts", "build.gradle")
+
+    /**
+     * Deletes every existing top-level entry in [targetDir] without following directory symlinks:
+     * each symlink is unlinked itself and its target is never traversed. If [targetDir] is itself
+     * a symlink, the caller's listFiles() already resolves it and the purge applies to the named
+     * directory's contents, as intended; assertSafeToPurge's canonical checks still protect
+     * home and system roots.
+     */
+    private fun purgeExistingFiles(
+        targetDir: File,
+        existingFiles: Array<File>,
+    ) {
+        assertSafeToPurge(targetDir)
+        val failures = mutableListOf<String>()
+        for (file in existingFiles.sortedBy { it.name in pluginMarkerNames }) {
+            val skipPurgedMarker = file.name in pluginMarkerNames && failures.isNotEmpty()
+            val rootPath = file.toPath()
+            if (!skipPurgedMarker && Files.exists(rootPath, LinkOption.NOFOLLOW_LINKS)) {
+                Files.walkFileTree(
+                    rootPath,
+                    emptySet(),
+                    Int.MAX_VALUE,
+                    object : SimpleFileVisitor<Path>() {
+                        override fun visitFile(
+                            file: Path,
+                            attrs: BasicFileAttributes,
+                        ): FileVisitResult {
+                            try {
+                                Files.delete(file)
+                            } catch (e: IOException) {
+                                failures.add("${file.toAbsolutePath()}: ${e.message}")
+                            } catch (e: SecurityException) {
+                                failures.add("${file.toAbsolutePath()}: ${e.message}")
+                            }
+                            return FileVisitResult.CONTINUE
+                        }
+
+                        override fun postVisitDirectory(
+                            dir: Path,
+                            exc: IOException?,
+                        ): FileVisitResult {
+                            if (exc != null) {
+                                failures.add("${dir.toAbsolutePath()}: ${exc.message}")
+                            } else {
+                                try {
+                                    Files.delete(dir)
+                                } catch (e: IOException) {
+                                    failures.add("${dir.toAbsolutePath()}: ${e.message}")
+                                } catch (e: SecurityException) {
+                                    failures.add("${dir.toAbsolutePath()}: ${e.message}")
+                                }
+                            }
+                            return FileVisitResult.CONTINUE
+                        }
+
+                        override fun visitFileFailed(
+                            file: Path,
+                            exc: IOException,
+                        ): FileVisitResult {
+                            failures.add("${file.toAbsolutePath()}: ${exc.message}")
+                            return FileVisitResult.CONTINUE
+                        }
+                    },
+                )
+            }
+        }
+        check(failures.isEmpty()) {
+            "Failed to delete existing file or directory during --force overwrite: " +
+                "${targetDir.absolutePath} was partially cleared and no scaffold was written. " +
+                "Remove the remaining files manually before retrying --force. " +
+                "Failures:\n" + failures.joinToString("\n")
         }
     }
 }

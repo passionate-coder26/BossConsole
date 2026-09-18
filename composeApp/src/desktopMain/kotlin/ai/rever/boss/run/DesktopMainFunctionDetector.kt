@@ -489,8 +489,8 @@ class DesktopMainFunctionDetector : MainFunctionDetector {
         }
 
         // Fallback: compile and run with kotlinc (for simple standalone files)
-        val jarName = File(filePath).nameWithoutExtension.replace("'", "_")
-        val jarPath = tempFilePath(tempDir, "$jarName.jar")
+        val jarName = outputStem(filePath, forWindows)
+        val jarPath = tempFilePath(tempDir, "$jarName.jar", forWindows)
         val compileCmd =
             "kotlinc ${shellEscape(filePath, forWindows)} -include-runtime -d ${shellEscape(jarPath, forWindows)}"
         val runCmd = "java -jar ${shellEscape(jarPath, forWindows)}"
@@ -604,18 +604,36 @@ class DesktopMainFunctionDetector : MainFunctionDetector {
         forWindows: Boolean = ShellUtils.isWindows,
     ): String = if (forWindows) ShellPathQuoting.powershell(str) else ShellPathQuoting.posix(str)
 
+    private fun outputStem(
+        filePath: String,
+        forWindows: Boolean,
+    ): String {
+        // A Windows path must also be understood when the explicit seam runs on POSIX.
+        // Backslashes remain valid filename characters for the POSIX branch.
+        val path = if (forWindows) filePath.replace('\\', '/') else filePath
+        return path.substringAfterLast('/').substringBeforeLast('.').replace("'", "_")
+    }
+
     /**
-     * A path under [tempDir] (the caller's resolved temp directory - see [generateCommand]'s
-     * own parameter), not a hardcoded `/tmp` - which Windows resolves against the current
-     * drive's root (`[System.IO.Path]::GetFullPath('/tmp/x')` -> `C:\tmp\x`), not a temp
-     * directory at all (BossConsole#594). Takes the directory as a parameter, rather than
-     * reading the system property itself, so a test can inject a fixed value and assert
-     * against it regardless of which OS actually runs the test.
+     * Where a compile-then-run fallback writes its build output.
+     *
+     * The separator comes from [forWindows] rather than [File], whose own is fixed by the
+     * host: joining with [File] would make the POSIX branch emit a `\` when generated on
+     * Windows, and the seam exists precisely so either branch can be produced anywhere.
+     *
+     * The caller supplies an already-absolute temp directory (production passes
+     * `java.io.tmpdir`, which is absolute on all three platforms); do not reinstate
+     * `File(directory, fileName).absolutePath` here - it would fold the host separator
+     * back into this platform-explicit seam.
      */
     private fun tempFilePath(
-        tempDir: String,
-        name: String,
-    ): String = File(tempDir, name).absolutePath
+        tempDirPath: String,
+        fileName: String,
+        forWindows: Boolean,
+    ): String {
+        val directory = if (forWindows) tempDirPath.trimEnd('/', '\\') else tempDirPath.trimEnd('/')
+        return directory + (if (forWindows) "\\" else "/") + fileName
+    }
 
     private fun generatePythonCommand(
         detected: DetectedMainFunction,
@@ -659,8 +677,8 @@ class DesktopMainFunctionDetector : MainFunctionDetector {
 
         // Fallback: Compile and run the specific Rust file directly. `-o` names the compiled
         // binary; Windows needs a .exe suffix for it to be directly launchable.
-        val outputName = File(filePath).nameWithoutExtension.replace("'", "_")
-        val outputPath = tempFilePath(tempDir, if (forWindows) "$outputName.exe" else outputName)
+        val outputName = outputStem(filePath, forWindows)
+        val outputPath = tempFilePath(tempDir, if (forWindows) "$outputName.exe" else outputName, forWindows)
         val compileCmd = "rustc ${shellEscape(filePath, forWindows)} -o ${shellEscape(outputPath, forWindows)}"
         // A bare quoted path is a COMMAND on POSIX but a STRING EXPRESSION in PowerShell - it
         // would be printed, not run. The call operator (&) is what tells PowerShell to invoke

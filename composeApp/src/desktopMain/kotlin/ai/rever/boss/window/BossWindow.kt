@@ -398,6 +398,7 @@ fun ApplicationScope.BossWindow(
         MenuBar {
             // File Menu
             Menu("File") {
+                Item("Go Home", onClick = { MenuActionsHandler.triggerGoHome(windowState.id) })
                 Item(
                     "New Tab",
                     shortcut = shortcutBridge.getKeyShortcut(KeymapActions.TAB_NEW),
@@ -541,6 +542,14 @@ fun ApplicationScope.BossWindow(
                     },
                 )
 
+                Separator()
+
+                Item(
+                    "Print...",
+                    shortcut = shortcutBridge.getKeyShortcut(KeymapActions.BROWSER_PRINT),
+                    enabled = hasBrowser,
+                    onClick = { MenuActionsHandler.triggerPrintBrowser(windowState.id) },
+                )
                 Separator()
 
                 Item(

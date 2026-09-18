@@ -402,88 +402,124 @@ class MainFunctionDetectorTest {
         )
     }
 
-    // ==================== generateCommand: standalone-file compile+run fallback ====================
+    // ==================== generateCommand: compile-then-run fallbacks ====================
     //
-    // Every assertion below is against an INJECTED fake temp dir, via generateCommand's
-    // 4-argument overload - not System.getProperty("java.io.tmpdir"). A test that reads the
-    // real property to build its own expectation would pass against the pre-fix hardcoded
-    // "/tmp" on any host where the real property happens to BE "/tmp" (ubuntu-latest, for
-    // instance) - discriminating on the CI matrix rather than on the code, which is exactly
-    // the failure mode BossConsole#594's own quoting fix was written to close.
+    // Build output used to go to a hardcoded `/tmp/…`. Windows has no `/tmp`: a leading
+    // slash there resolves against the current drive, so the artifact landed in `C:\tmp`
+    // (the drive root, created on demand) rather than the user's temp directory.
 
     @Test
-    fun `standalone kotlin file falls back to compiling into the injected temp dir, not literal tmp`(
-        @TempDir tempDir: File,
-    ) {
-        val source = File(tempDir, "Scratch.kt").apply { writeText("fun main() {}") }
-        val fakeTempDir = "/fake-temp-dir"
-        val expectedJar = File(fakeTempDir, "Scratch.jar").absolutePath
-
-        val posix =
+    fun `standalone kotlin compiles into the temp directory and runs the jar`() {
+        assertEquals(
+            "kotlinc '/no-such-root/Main.kt' -include-runtime -d '/var/tmp/Main.jar' && java -jar '/var/tmp/Main.jar'",
             detector.generateCommand(
-                detectedIn(source.absolutePath, Language.KOTLIN),
-                tempDir.absolutePath,
+                detectedIn("/no-such-root/Main.kt", Language.KOTLIN),
+                "/no-such-root",
                 forWindows = false,
-                tempDir = fakeTempDir,
-            )
-        assertTrue(posix.contains("-d '$expectedJar'"), "expected the injected temp dir in: $posix")
-        assertTrue(posix.contains("java -jar '$expectedJar'"))
-        assertTrue(posix.contains(" && "), "posix chains with && so a failed compile skips the run")
-
-        val windows =
-            detector.generateCommand(
-                detectedIn(source.absolutePath, Language.KOTLIN),
-                tempDir.absolutePath,
-                forWindows = true,
-                tempDir = fakeTempDir,
-            )
-        assertTrue(windows.contains("-d '$expectedJar'"))
-        assertTrue(windows.contains("; "), "powershell chains with ; not &&")
+                tempDir = "/var/tmp",
+            ),
+        )
     }
 
     @Test
-    fun `standalone rust file falls back to compiling into the injected temp dir, not literal tmp`(
-        @TempDir tempDir: File,
-    ) {
-        val source = File(tempDir, "scratch.rs").apply { writeText("fn main() {}") }
-        val fakeTempDir = "/fake-temp-dir"
-
-        val posix =
+    fun `standalone kotlin on windows uses the windows temp directory and separator`() {
+        assertEquals(
+            "kotlinc 'C:\\no-such-root\\Main.kt' -include-runtime -d 'C:\\Temp\\Main.jar'; " +
+                "java -jar 'C:\\Temp\\Main.jar'",
             detector.generateCommand(
-                detectedIn(source.absolutePath, Language.RUST),
-                tempDir.absolutePath,
-                forWindows = false,
-                tempDir = fakeTempDir,
-            )
-        val expectedPosixOutput = File(fakeTempDir, "scratch").absolutePath
-        assertTrue(posix.contains("-o '$expectedPosixOutput'"), "expected the injected temp dir in: $posix")
-        assertTrue(posix.endsWith("'$expectedPosixOutput'"), "POSIX runs the bare quoted path directly: $posix")
+                detectedIn("C:\\no-such-root\\Main.kt", Language.KOTLIN),
+                "C:\\no-such-root",
+                forWindows = true,
+                tempDir = "C:\\Temp",
+            ),
+        )
     }
 
     @Test
-    fun `on windows, the compiled rust binary gets an exe suffix and is invoked with the call operator`(
-        @TempDir tempDir: File,
-    ) {
-        // BossConsole#705 review finding: a bare quoted path is a STRING EXPRESSION in
-        // PowerShell, not a command - without "&" the compiled program is never launched, and
-        // without ".exe" `rustc -o` produces a file PowerShell's command resolution may not
-        // run at all even when invoked correctly.
-        val source = File(tempDir, "scratch.rs").apply { writeText("fn main() {}") }
-        val fakeTempDir = "/fake-temp-dir"
-
-        val windows =
+    fun `standalone rust compiles into the temp directory and runs the binary`() {
+        assertEquals(
+            "rustc '/no-such-root/main.rs' -o '/var/tmp/main' && '/var/tmp/main'",
             detector.generateCommand(
-                detectedIn(source.absolutePath, Language.RUST),
-                tempDir.absolutePath,
-                forWindows = true,
-                tempDir = fakeTempDir,
-            )
+                detectedIn("/no-such-root/main.rs", Language.RUST),
+                "/no-such-root",
+                forWindows = false,
+                tempDir = "/var/tmp",
+            ),
+        )
+    }
 
-        val expectedWindowsOutput = File(fakeTempDir, "scratch.exe").absolutePath
-        assertTrue(windows.contains("-o '$expectedWindowsOutput'"), "expected a .exe output path in: $windows")
-        assertTrue(
-            windows.endsWith("& '$expectedWindowsOutput'"),
-            "expected the call operator before the compiled binary in: $windows",
+    @Test
+    fun `standalone rust on windows uses the windows temp directory and separator`() {
+        assertEquals(
+            "rustc 'C:\\no-such-root\\main.rs' -o 'C:\\Temp\\main.exe'; & 'C:\\Temp\\main.exe'",
+            detector.generateCommand(
+                detectedIn("C:\\no-such-root\\main.rs", Language.RUST),
+                "C:\\no-such-root",
+                forWindows = true,
+                tempDir = "C:\\Temp",
+            ),
+        )
+    }
+
+    @Test
+    fun `windows rust invokes a quoted executable in a temp path with spaces and apostrophes`() {
+        assertEquals(
+            "rustc 'C:\\no-such-root\\main.rs' -o 'C:\\it''s temp\\main.exe'; & 'C:\\it''s temp\\main.exe'",
+            detector.generateCommand(
+                detectedIn("C:\\no-such-root\\main.rs", Language.RUST),
+                "C:\\no-such-root",
+                forWindows = true,
+                tempDir = "C:\\it's temp",
+            ),
+        )
+    }
+
+    @Test
+    fun `windows kotlin invokes a quoted jar in a temp path with spaces and apostrophes`() {
+        assertEquals(
+            "kotlinc 'C:\\no-such-root\\Main.kt' -include-runtime -d 'C:\\it''s temp\\Main.jar'; " +
+                "java -jar 'C:\\it''s temp\\Main.jar'",
+            detector.generateCommand(
+                detectedIn("C:\\no-such-root\\Main.kt", Language.KOTLIN),
+                "C:\\no-such-root",
+                forWindows = true,
+                tempDir = "C:\\it's temp",
+            ),
+        )
+    }
+
+    @Test
+    fun `posix output stem preserves a literal backslash in a filename`() {
+        assertEquals(
+            "rustc '/no-such-root/a\\b.rs' -o '/var/tmp/a\\b' && '/var/tmp/a\\b'",
+            detector.generateCommand(
+                detectedIn("/no-such-root/a\\b.rs", Language.RUST),
+                "/no-such-root",
+                forWindows = false,
+                tempDir = "/var/tmp",
+            ),
+        )
+    }
+
+    @Test
+    fun `a trailing separator on the temp directory does not double up`() {
+        assertEquals(
+            "rustc 'C:\\no-such-root\\main.rs' -o 'C:\\Temp\\main.exe'; & 'C:\\Temp\\main.exe'",
+            detector.generateCommand(
+                detectedIn("C:\\no-such-root\\main.rs", Language.RUST),
+                "C:\\no-such-root",
+                forWindows = true,
+                tempDir = "C:\\Temp\\",
+            ),
+        )
+        assertEquals(
+            "rustc '/no-such-root/main.rs' -o '/var/tmp/main' && '/var/tmp/main'",
+            detector.generateCommand(
+                detectedIn("/no-such-root/main.rs", Language.RUST),
+                "/no-such-root",
+                forWindows = false,
+                tempDir = "/var/tmp/",
+            ),
         )
     }
 

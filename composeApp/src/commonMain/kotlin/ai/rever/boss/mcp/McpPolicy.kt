@@ -76,6 +76,13 @@ data class McpToolPolicyConfig(
 /**
  * Known tools and patterns that perform state mutations, infrastructure modifications,
  * shell execution, or credential extraction.
+ *
+ * Two signals feed [isMutating], combined fail-closed: the name signals this object owns
+ * ([KNOWN_MUTATING_TOOLS], [MUTATING_SUFFIXES]) and the provider's own read-only declaration
+ * ([ai.rever.boss.plugin.api.McpToolDefinition.readOnly], which every registered tool already
+ * carries). Neither signal alone is trustworthy - an innocent name can hide a mutation the
+ * catalog never listed (#804), and a mutating name must not be upgraded by a dishonest read
+ * claim - so either one saying "mutating" is final.
  */
 object McpMutatingToolCatalog {
     /**
@@ -111,6 +118,15 @@ object McpMutatingToolCatalog {
             "run_in_panel",
             "send_input",
             "project_replace",
+            // Workspace and Terminal Lifecycle
+            "open_workspace",
+            "workspace_open",
+            "create_workspace",
+            "workspace_create",
+            "open_terminal",
+            "terminal_open",
+            "close_workspace",
+            "workspace_close",
         )
 
     private val MUTATING_SUFFIXES =
@@ -129,23 +145,40 @@ object McpMutatingToolCatalog {
         )
 
     /**
-     * Determine if a tool is mutating based on known tool catalog and naming heuristics.
+     * Determine whether a tool is mutating, fail-closed over the two signals the host has.
+     *
+     * The name signals are evaluated first and are final: a tool NAMED like a mutation stays
+     * mutating even when its provider declares [declaredReadOnly] = true, because a dishonest or
+     * careless claim must never upgrade a tool past what its own name gives away. Only when the
+     * name says nothing does the provider's declaration decide: [declaredReadOnly] = false is
+     * the tool telling the host at registration that it has side effects, and that wins over any
+     * innocent name (#804: a third-party `data_fetch`/`env_sync` used to be auto-allowed under
+     * the lenient read-only default purely because its name avoided the catalog). [declaredReadOnly]
+     * = null means the caller has no declaration in hand - a policy lookup for a tool whose
+     * definition is not available to it - and the name-only answer stands, exactly as before
+     * this parameter existed.
      */
-    fun isMutating(toolName: String): Boolean {
-        if (toolName in KNOWN_MUTATING_TOOLS) return true
+    fun isMutating(
+        toolName: String,
+        declaredReadOnly: Boolean? = null,
+    ): Boolean {
         val lower = toolName.lowercase()
-        return MUTATING_SUFFIXES.any { lower.endsWith(it) }
+        return toolName in KNOWN_MUTATING_TOOLS ||
+            MUTATING_SUFFIXES.any { lower.endsWith(it) } ||
+            declaredReadOnly == false
     }
 
     /**
-     * Resolve the action for a given tool name against [config].
+     * Resolve the action for a given tool name against [config], honoring the same
+     * [declaredReadOnly] declaration [isMutating] does.
      */
     fun resolveAction(
         toolName: String,
         config: McpToolPolicyConfig,
+        declaredReadOnly: Boolean? = null,
     ): McpPolicyAction {
         config.rules[toolName]?.let { return it }
-        return if (isMutating(toolName)) {
+        return if (isMutating(toolName, declaredReadOnly)) {
             config.defaultMutatingAction
         } else {
             config.defaultReadOnlyAction

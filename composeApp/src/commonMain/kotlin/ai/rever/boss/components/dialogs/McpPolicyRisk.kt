@@ -1,5 +1,6 @@
 package ai.rever.boss.components.dialogs
 
+import ai.rever.boss.mcp.McpMutatingToolCatalog
 import ai.rever.boss.mcp.McpPolicyAction
 import ai.rever.boss.mcp.sandbox.DefaultMcpRiskEvaluator
 import ai.rever.boss.mcp.sandbox.McpRiskLevel
@@ -21,7 +22,11 @@ internal fun sensitiveAllows(
     rules: Map<String, McpPolicyAction>,
 ) = tools.filter {
     it.toolName in selected &&
-        (policyRisk(it).level >= McpRiskLevel.HIGH || rules[it.toolName] == McpPolicyAction.DENY)
+        (
+            policyRisk(it).level >= McpRiskLevel.HIGH ||
+                McpMutatingToolCatalog.isMutating(it.toolName, it.readOnly) ||
+                rules[it.toolName] == McpPolicyAction.DENY
+        )
 }
 
 internal fun savedPolicyLabel(rule: McpPolicyAction?): String =

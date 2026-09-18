@@ -123,6 +123,10 @@ object McpToolRegistryImpl : McpToolRegistry {
             ledger = ledger,
         )
 
+    init {
+        registerProvider(WorkspaceMcpToolProvider)
+    }
+
     override val allTools: StateFlow<List<RegisteredMcpTool>> get() = core.allTools
     override val disabledToolNames: StateFlow<Set<String>> get() = core.disabledToolNames
     override val tools: StateFlow<List<RegisteredMcpTool>> get() = core.tools
@@ -745,7 +749,11 @@ internal class McpToolRegistryCore(
                 ?: return McpToolResult("Unknown or disabled MCP tool: $toolName", isError = true)
         val args = parseArgs(arguments)
         val revocation = policyEngine.revocationVersion(toolName, tool.providerId)
-        val policy = policyEngine.policyFor(toolName, tool.providerId)
+        // The definition's own readOnly declaration rides along on every policy consult for
+        // this invocation: a tool that declared side effects classifies as mutating whatever
+        // its name says (#804), so it gets the mutating default - ASK under the factory
+        // config - rather than being auto-allowed for avoiding the catalog's name patterns.
+        val policy = policyEngine.policyFor(toolName, tool.providerId, tool.definition.readOnly)
         val startTime = System.nanoTime()
         var disposition = McpApprovalDisposition.AUTO_ALLOWED
         var result: McpToolResult? = null
@@ -815,6 +823,7 @@ internal class McpToolRegistryCore(
                     revocation,
                     grantSessionTrust = disposition.grantsSessionTrust,
                     providerId = tool.providerId,
+                    declaredReadOnly = tool.definition.readOnly,
                 )
         }
 
@@ -830,7 +839,7 @@ internal class McpToolRegistryCore(
             val toolName = tool.definition.name
             if (!isAvailable(tool) ||
                 policyEngine.revocationVersion(toolName, tool.providerId) != revocation ||
-                policyEngine.policyFor(toolName, tool.providerId) == McpPolicyAction.DENY
+                policyEngine.policyFor(toolName, tool.providerId, tool.definition.readOnly) == McpPolicyAction.DENY
             ) {
                 return@withContext McpApprovalDisposition.POLICY_DENIED to
                     "MCP tool access revoked while awaiting approval"
@@ -848,7 +857,7 @@ internal class McpToolRegistryCore(
             }
             val disposition =
                 if (policyEngine.revocationVersion(toolName, tool.providerId) != revocation ||
-                    policyEngine.policyFor(toolName, tool.providerId) == McpPolicyAction.DENY
+                    policyEngine.policyFor(toolName, tool.providerId, tool.definition.readOnly) == McpPolicyAction.DENY
                 ) {
                     McpApprovalDisposition.POLICY_DENIED
                 } else {
@@ -872,7 +881,7 @@ internal class McpToolRegistryCore(
             // since this check alone is not atomic with the write that follows it.
             if (!isAvailable(tool) ||
                 policyEngine.revocationVersion(toolName, tool.providerId) != revocation ||
-                policyEngine.policyFor(toolName, tool.providerId) == McpPolicyAction.DENY
+                policyEngine.policyFor(toolName, tool.providerId, tool.definition.readOnly) == McpPolicyAction.DENY
             ) {
                 return McpApprovalDisposition.POLICY_DENIED to
                     "MCP tool access revoked while awaiting approval"
@@ -900,7 +909,7 @@ internal class McpToolRegistryCore(
             // (PROVIDER_TRUST_PERSIST_FAILED) - the former must not run at all, exactly the
             // disambiguation validateApproval already does for the per-tool path.
             return if (policyEngine.revocationVersion(toolName, tool.providerId) != revocation ||
-                policyEngine.policyFor(toolName, tool.providerId) == McpPolicyAction.DENY
+                policyEngine.policyFor(toolName, tool.providerId, tool.definition.readOnly) == McpPolicyAction.DENY
             ) {
                 McpApprovalDisposition.POLICY_DENIED to "MCP tool access revoked while awaiting approval"
             } else {
@@ -963,6 +972,7 @@ internal class McpToolRegistryCore(
                             tool.providerId,
                             McpArgumentSanitizer.parseArguments(args.raw),
                             riskAssessment = DefaultMcpRiskEvaluator().evaluateRisk(tool.definition.name, args),
+                            declaredReadOnly = tool.definition.readOnly,
                         )
                 ) {
                     is McpApprovalDecision.Approved -> {

@@ -174,6 +174,16 @@ class IpcAuthorizationTest {
                     subscription.await()
                     refused(Status.Code.PERMISSION_DENIED) { replacement.getState(key) }
                     refused(Status.Code.UNAUTHENTICATED) { alpha.getState(key) }
+                    val write =
+                        StateUpdate.newBuilder().setKey(key.key).setValue(ByteString.copyFromUtf8("replacement"))
+                    refused(Status.Code.PERMISSION_DENIED) {
+                        replacement.setState(write.setExpectedVersion(Long.MAX_VALUE).build())
+                    }
+                    val beta = StateServiceGrpcKt.StateServiceCoroutineStub(host.channelFor("beta"))
+                    refused(Status.Code.PERMISSION_DENIED) { beta.setState(write.setExpectedVersion(0).build()) }
+                    assertEquals("replacement", replacement.setState(write.build()).value.toStringUtf8())
+                    assertEquals("replacement", replacement.getState(key).value.toStringUtf8())
+                    refused(Status.Code.UNAUTHENTICATED) { alpha.setState(write.build()) }
                 }
             }
         }

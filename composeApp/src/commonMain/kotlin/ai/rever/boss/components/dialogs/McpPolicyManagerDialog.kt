@@ -445,7 +445,7 @@ private fun ProactivePolicyRow(
                 PolicyChoice("Deny", selected == McpPolicyAction.DENY, { onSelect(McpPolicyAction.DENY) }, colors)
             }
             if (selected == McpPolicyAction.ALLOW) {
-                ProactiveAllowConfirmation(tool.toolName, colors)
+                ProactiveAllowConfirmation(tool.toolName, tool.readOnly, colors)
             }
             if (failureMessage != null) {
                 Text(failureMessage, fontSize = 12.sp, color = colors.alert)
@@ -499,10 +499,14 @@ private fun PolicyChoice(
 @Composable
 private fun ProactiveAllowConfirmation(
     toolName: String,
+    readOnly: Boolean,
     colors: BossColorScheme,
 ) {
-    val risk = remember(toolName) { DefaultMcpRiskEvaluator().evaluateRisk(toolName, McpToolArgs(emptyMap())) }
-    if (McpMutatingToolCatalog.isMutating(toolName)) {
+    val risk =
+        remember(toolName) {
+            DefaultMcpRiskEvaluator().evaluateRisk(toolName, McpToolArgs(emptyMap()))
+        }
+    if (McpMutatingToolCatalog.isMutating(toolName, readOnly)) {
         Text("This tool performs mutations or external execution.", fontSize = 12.sp, color = colors.alert)
     }
     Text(

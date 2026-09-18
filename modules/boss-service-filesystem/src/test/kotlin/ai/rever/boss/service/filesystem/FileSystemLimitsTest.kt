@@ -1,5 +1,6 @@
 package ai.rever.boss.service.filesystem
 
+import ai.rever.boss.ipc.auth.ProcessAuthority
 import ai.rever.boss.ipc.proto.services.FileSystemServiceGrpcKt
 import ai.rever.boss.ipc.proto.services.ReadFileRequest
 import ai.rever.boss.ipc.proto.services.ScanDirectoryRequest
@@ -10,8 +11,6 @@ import com.sun.jna.NativeLibrary
 import com.sun.jna.Platform
 import com.sun.jna.Pointer
 import com.sun.jna.WString
-import io.grpc.ManagedChannelBuilder
-import io.grpc.ServerBuilder
 import io.grpc.Status
 import io.grpc.StatusException
 import kotlinx.coroutines.CompletableDeferred
@@ -40,20 +39,13 @@ import kotlin.test.assertTrue
 
 class FileSystemLimitsTest {
     private val root = Files.createTempDirectory("filesystem-limits-")
-    private val server =
-        ServerBuilder
-            .forPort(0)
-            .addService(FileSystemServiceImpl())
-            .intercept(RpcFailureDiagnostics)
-            .build()
-            .start()
-    private val channel = ManagedChannelBuilder.forAddress("127.0.0.1", server.port).usePlaintext().build()
+    private val transport = AuthenticatedFileService(FileSystemServiceImpl())
+    private val channel = transport.channelFor("limits-host", ProcessAuthority.HOST)
     private val stub = FileSystemServiceGrpcKt.FileSystemServiceCoroutineStub(channel)
 
     @AfterTest
     fun cleanup() {
-        channel.shutdownNow()
-        server.shutdownNow()
+        transport.close()
         // Files.walk does not follow symlinks; fixture aliases must never widen cleanup.
         Files.walk(root).use { paths ->
             paths.sorted(Comparator.reverseOrder()).forEach { Files.deleteIfExists(it) }

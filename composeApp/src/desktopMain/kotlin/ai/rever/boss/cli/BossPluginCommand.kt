@@ -46,7 +46,7 @@ class BossPluginInitCommand : CliktCommand(name = "init") {
         help = "Plugin template: mcp-tool, ui-panel, background-service, full (default: mcp-tool)",
     ).default("mcp-tool")
     val dir by option("-d", "--dir", help = "Target directory path")
-    val force by option("-f", "--force", help = "Overwrite non-empty target directory").flag(default = false)
+    val force by option("-f", "--force", help = "Purge and overwrite existing target directory").flag(default = false)
     val json by option("--json", help = "Output machine-readable JSON").flag(default = false)
 
     override fun run() {
