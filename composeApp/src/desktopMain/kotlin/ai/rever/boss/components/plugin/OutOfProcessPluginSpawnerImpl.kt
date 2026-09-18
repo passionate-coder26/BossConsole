@@ -19,7 +19,10 @@ import ai.rever.boss.process.RestartPolicy
 import io.grpc.ManagedChannel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeout
@@ -62,6 +65,14 @@ class OutOfProcessPluginSpawnerImpl(
 
     private val pluginLifecycleMutexes =
         java.util.concurrent.ConcurrentHashMap<String, Mutex>()
+
+    private val restartEpochs = ConcurrentHashMap<String, java.util.concurrent.atomic.AtomicLong>()
+
+    private fun restartEpoch(pluginId: String): java.util.concurrent.atomic.AtomicLong =
+        restartEpochs.computeIfAbsent(pluginId) {
+            java.util.concurrent.atomic
+                .AtomicLong()
+        }
 
     private val processMonitor =
         PluginProcessMonitor(this).also { it.start() }
@@ -175,15 +186,17 @@ class OutOfProcessPluginSpawnerImpl(
                 bridge.start()
                 stateBridges[pluginId] = bridge
 
+                val monitoredEpoch = restartEpoch(pluginId).get()
+
                 processMonitor.monitor(
                     pluginId = pluginId,
                     displayName = manifest.displayName,
                     maxRestarts = manifest.sandbox.maxRestartAttempts,
                     restartAction = {
-                        restartAfterCrash(manifest, jarPath)
+                        restartAfterCrash(manifest, jarPath, monitoredEpoch)
                     },
                     terminalFailureAction = {
-                        cleanupAfterTerminalFailure(pluginId)
+                        cleanupAfterTerminalFailure(pluginId, monitoredEpoch)
                     },
                 )
 
@@ -232,20 +245,30 @@ class OutOfProcessPluginSpawnerImpl(
         process?.takeUnless { it.isAlive }?.let { kernelRegistry()?.unregisterIfSame(it.config.processId, it) }
     }
 
-    override suspend fun terminate(pluginId: String): Result<Unit> =
-        withPluginLifecycleLock(pluginId) {
-            processMonitor.unmonitor(pluginId)
-            terminateManagedProcess(pluginId)
-        }
+    override suspend fun terminate(pluginId: String): Result<Unit> {
+        restartEpoch(pluginId).incrementAndGet()
+        processMonitor.unmonitor(pluginId)
+
+        val result =
+            withContext(NonCancellable) {
+                withPluginLifecycleLock(pluginId) {
+                    processMonitor.unmonitor(pluginId)
+                    terminateManagedProcess(pluginId)
+                }
+            }
+        currentCoroutineContext().ensureActive()
+        return result
+    }
 
     private suspend fun restartAfterCrash(
         manifest: PluginManifest,
         jarPath: String,
+        expectedEpoch: Long,
     ): Result<Unit> {
         val pluginId = manifest.pluginId
 
         return withPluginLifecycleLock(pluginId) {
-            if (!processMonitor.isMonitored(pluginId)) {
+            if (restartEpoch(pluginId).get() != expectedEpoch || !processMonitor.isMonitored(pluginId)) {
                 return@withPluginLifecycleLock Result.failure(
                     IllegalStateException("Plugin is no longer monitored: $pluginId"),
                 )
@@ -256,7 +279,7 @@ class OutOfProcessPluginSpawnerImpl(
                 return@withPluginLifecycleLock terminated
             }
 
-            if (!processMonitor.isMonitored(pluginId)) {
+            if (restartEpoch(pluginId).get() != expectedEpoch || !processMonitor.isMonitored(pluginId)) {
                 return@withPluginLifecycleLock Result.failure(
                     IllegalStateException("Plugin restart was cancelled: $pluginId"),
                 )
@@ -266,9 +289,12 @@ class OutOfProcessPluginSpawnerImpl(
         }
     }
 
-    private suspend fun cleanupAfterTerminalFailure(pluginId: String) {
+    private suspend fun cleanupAfterTerminalFailure(
+        pluginId: String,
+        expectedEpoch: Long,
+    ) {
         withPluginLifecycleLock(pluginId) {
-            if (processMonitor.isMonitored(pluginId)) {
+            if (restartEpoch(pluginId).get() == expectedEpoch && processMonitor.isMonitored(pluginId)) {
                 terminateManagedProcess(pluginId).getOrThrow()
             }
         }

@@ -187,6 +187,49 @@ class PluginProcessMonitorTest {
         }
 
     @Test
+    fun `old restart cannot update a newly monitored plugin`() =
+        runBlocking {
+            val pluginId = "test-plugin"
+            val backend = FakeBackend(alive = false)
+            val monitor = PluginProcessMonitor(backend)
+            val restartEntered = CompletableDeferred<Unit>()
+            val releaseRestart = CompletableDeferred<Unit>()
+
+            try {
+                monitor.monitor(
+                    pluginId = pluginId,
+                    displayName = "Original instance",
+                    restartAction = {
+                        restartEntered.complete(Unit)
+                        releaseRestart.await()
+                        Result.success(Unit)
+                    },
+                )
+
+                val oldCheck = async { monitor.checkHealthNow() }
+                withTimeout(5_000) { restartEntered.await() }
+
+                monitor.unmonitor(pluginId)
+                monitor.monitor(
+                    pluginId = pluginId,
+                    displayName = "New instance",
+                    restartAction = { Result.success(Unit) },
+                )
+
+                releaseRestart.complete(Unit)
+                withTimeout(5_000) { oldCheck.await() }
+
+                val current = monitor.healthStates.value[pluginId]
+                assertEquals("New instance", current?.displayName)
+                assertEquals(PluginProcessState.RUNNING, current?.processState)
+                assertEquals(0, current?.restartCount, "Old restart must not change the new instance")
+            } finally {
+                releaseRestart.complete(Unit)
+                monitor.dispose()
+            }
+        }
+
+    @Test
     fun `health check defers restart while process reaping is active`() =
         runBlocking {
             val backend =

@@ -54,6 +54,7 @@ data class PluginHealthInfo(
     val lastError: String? = null,
     val uptimeMs: Long = 0,
     val connected: Boolean = false,
+    val monitorGeneration: Long = 0,
 )
 
 /**
@@ -98,12 +99,21 @@ class PluginProcessMonitor internal constructor(
         java.util.concurrent.ConcurrentHashMap
             .newKeySet<String>()
 
+    private val nextMonitorGeneration =
+        java.util.concurrent.atomic
+            .AtomicLong()
+
     /** Restart action captured for each monitored plugin. */
     private val restartActions =
         java.util.concurrent.ConcurrentHashMap<String, suspend () -> Result<Unit>>()
 
+    private data class TerminalFailureRegistration(
+        val monitorGeneration: Long,
+        val action: suspend () -> Unit,
+    )
+
     private val terminalFailureActions =
-        java.util.concurrent.ConcurrentHashMap<String, suspend () -> Unit>()
+        java.util.concurrent.ConcurrentHashMap<String, TerminalFailureRegistration>()
 
     private val restartingPlugins =
         java.util.concurrent.ConcurrentHashMap
@@ -128,12 +138,18 @@ class PluginProcessMonitor internal constructor(
     ) {
         if (disposed.get()) return
 
+        val generation =
+            _healthStates.value[pluginId]?.monitorGeneration
+                ?: nextMonitorGeneration.incrementAndGet()
+
         if (restartAction != null) {
             restartActions[pluginId] = restartAction
         }
         if (terminalFailureAction != null) {
-            terminalFailureActions[pluginId] = terminalFailureAction
+            terminalFailureActions[pluginId] =
+                TerminalFailureRegistration(generation, terminalFailureAction)
         }
+
         val info =
             PluginHealthInfo(
                 pluginId = pluginId,
@@ -142,6 +158,7 @@ class PluginProcessMonitor internal constructor(
                 pid = backend.getManagedProcess(pluginId)?.pid,
                 maxRestarts = maxRestarts,
                 connected = backend.isConnected(pluginId),
+                monitorGeneration = generation,
             )
         _healthStates.update { states -> states + (pluginId to info) }
     }
@@ -216,7 +233,7 @@ class PluginProcessMonitor internal constructor(
 
             current.restartCount >= current.maxRestarts -> {
                 if (current.processState != PluginProcessState.FAILED) {
-                    runTerminalFailureAction(pluginId)
+                    runTerminalFailureAction(pluginId, current.monitorGeneration)
                 }
                 updateState(
                     pluginId,
@@ -227,7 +244,7 @@ class PluginProcessMonitor internal constructor(
 
             restartAction == null -> {
                 if (current.processState != PluginProcessState.FAILED) {
-                    runTerminalFailureAction(pluginId)
+                    runTerminalFailureAction(pluginId, current.monitorGeneration)
                 }
 
                 logger.error("Cannot restart plugin {}: no restart action stored", pluginId)
@@ -252,9 +269,19 @@ class PluginProcessMonitor internal constructor(
         }
     }
 
-    private suspend fun runTerminalFailureAction(pluginId: String) {
+    private suspend fun runTerminalFailureAction(
+        pluginId: String,
+        expectedGeneration: Long,
+    ) {
+        val registration = terminalFailureActions[pluginId] ?: return
+        if (registration.monitorGeneration != expectedGeneration ||
+            _healthStates.value[pluginId]?.monitorGeneration != expectedGeneration
+        ) {
+            return
+        }
+
         try {
-            terminalFailureActions[pluginId]?.invoke()
+            registration.action()
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
@@ -319,7 +346,10 @@ class PluginProcessMonitor internal constructor(
     private fun completeRestart(request: RestartRequest) {
         val pluginId = request.pluginId
         val process = backend.getManagedProcess(pluginId)
-        val latest = _healthStates.value[pluginId] ?: request.previousHealth
+        val latest =
+            _healthStates.value[pluginId]
+                ?.takeIf { it.monitorGeneration == request.previousHealth.monitorGeneration }
+                ?: return
 
         updateState(
             pluginId,
@@ -341,7 +371,10 @@ class PluginProcessMonitor internal constructor(
     ) {
         val pluginId = request.pluginId
         val previousHealth = request.previousHealth
-        val latest = _healthStates.value[pluginId] ?: previousHealth
+        val latest =
+            _healthStates.value[pluginId]
+                ?.takeIf { it.monitorGeneration == previousHealth.monitorGeneration }
+                ?: return
         val failureState =
             if (request.attempt >= previousHealth.maxRestarts) {
                 PluginProcessState.FAILED
@@ -376,7 +409,7 @@ class PluginProcessMonitor internal constructor(
             // cancellation leaking out of the terminal cleanup must not abort the
             // health tick for the remaining plugins.
             try {
-                runTerminalFailureAction(pluginId)
+                runTerminalFailureAction(pluginId, previousHealth.monitorGeneration)
             } catch (e: CancellationException) {
                 if (!currentCoroutineContext().isActive) {
                     throw e
@@ -509,7 +542,7 @@ class PluginProcessMonitor internal constructor(
     ) {
         while (true) {
             val states = _healthStates.value
-            if (pluginId !in states) return
+            if (states[pluginId]?.monitorGeneration != info.monitorGeneration) return
 
             val updated = states + (pluginId to info)
             if (_healthStates.compareAndSet(states, updated)) return
