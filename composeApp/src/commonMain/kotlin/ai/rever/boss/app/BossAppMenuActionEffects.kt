@@ -560,14 +560,13 @@ internal fun BossAppMenuActionEffects(
                             processGlobalCurrent = workspaceManager.currentWorkspace.value,
                         )
                     workspaceManager.updateCurrentWorkspace(snapshot)
-                    workspaceManager.saveCurrentWorkspace()?.let { savedWorkspace ->
+                    workspaceManager.saveCurrentWorkspace(name = null) { savedWorkspace ->
                         splitViewState.rebindCurrentWorkspace(savedWorkspace.id)
+                        // The unsaved flag is derived from the live layout against the persisted
+                        // copy in `workspaceManager.workspaces`, so report success only after the
+                        // write has completed and the manager has committed that copy.
+                        StatusMessageManager.showMessage("Space Saved")
                     }
-                    // Nothing marks it saved here. The unsaved flag is DERIVED, from the live
-                    // layout against the copy in `workspaceManager.workspaces` - which this
-                    // write replaces - so the affordance turns itself off when the bytes land
-                    // rather than when the button was pressed. See BossAppStartupEffects.
-                    StatusMessageManager.showMessage("Space Saved")
                 }
             }.launchIn(this)
     }

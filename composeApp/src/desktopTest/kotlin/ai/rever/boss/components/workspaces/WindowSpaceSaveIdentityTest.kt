@@ -28,6 +28,33 @@ class WindowSpaceSaveIdentityTest {
     )
 
     @Test
+    fun `missing active identity never borrows a different windows global Space`() {
+        val otherWindow = space("space-b")
+        val liveLayout =
+            space(
+                id = "fresh-space-a",
+                panelId = "live-a",
+                projectPath = "/live/a",
+                timestamp = 2L,
+            )
+
+        val snapshot =
+            spaceSnapshotForSave(
+                activeWorkspaceId = "space-a",
+                liveLayout = liveLayout,
+                knownSpaces = emptyList(),
+                processGlobalCurrent = otherWindow,
+            )
+
+        assertEquals(liveLayout.id, snapshot.id)
+        assertEquals(liveLayout.layout, snapshot.layout)
+        assertEquals(liveLayout.projectPath, snapshot.projectPath)
+        assertNotEquals(otherWindow.id, snapshot.id)
+        assertNotEquals(otherWindow.name, snapshot.name)
+        assertNotEquals(otherWindow.description, snapshot.description)
+    }
+
+    @Test
     fun `save binds the invoking windows live state to its own Space identity`() {
         val windowA = space("space-a", "saved-a", "/saved/a")
         val windowB = space("space-b", "saved-b", "/saved/b")
