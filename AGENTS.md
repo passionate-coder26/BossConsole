@@ -2263,6 +2263,14 @@ that provider id. Already queued sibling prompts still ask. Explicit tool ASK ru
 still override provider ALLOW. The Trusted plugins UI lists ALLOW rules only; hand-edited
 provider DENY rules currently require policy-file editing to remove.
 
+Plugin provider ids changed from `provider` to `plugin::provider` in #958. A persisted raw
+provider DENY remains authoritative at runtime for every scoped provider with that suffix:
+assigning the old key to one plugin is ambiguous, while dropping it would fail open. Do not copy
+that raw DENY into scoped policy entries; derived copies outlive revocation of the rule the
+operator actually set. Revoking the raw rule must immediately lift its inherited effect. Legacy
+raw ALLOW does not cross the namespace, because that would restore the provider-id aliasing the
+namespace was added to prevent. Keep this compatibility rule asymmetric.
+
 **YOLO mode** makes any call whose policy resolves to ASK run without prompting, for every tool
 and provider, CRITICAL-risk ones and tools registered later included - secret-bearing calls
 excepted: YOLO answers for the tool, never for the vault. Any user can turn it on,
