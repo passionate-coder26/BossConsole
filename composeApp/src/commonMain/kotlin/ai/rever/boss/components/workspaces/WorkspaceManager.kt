@@ -19,9 +19,14 @@ import kotlinx.coroutines.withContext
 import kotlin.time.Clock
 
 /**
- * Manages layout workspaces with file-based storage
+ * Manages layout workspaces with file-based storage.
+ *
+ * `fileManager` is a test seam: pass a manager pointed at a directory the test controls.
+ * The app passes nothing, which resolves against the user's real documents location.
  */
-class WorkspaceManager {
+class WorkspaceManager(
+    private val fileManager: WorkspaceFileManager = WorkspaceFileManager(),
+) {
     private val logger = BossLogger.forComponent("WorkspaceManager")
     private val _currentWorkspace = MutableStateFlow<LayoutWorkspace?>(null)
     val currentWorkspace: StateFlow<LayoutWorkspace?> = _currentWorkspace.asStateFlow()
@@ -134,7 +139,6 @@ class WorkspaceManager {
      */
     fun savedCopyOf(workspaceId: String): LayoutWorkspace? = _workspaces.value.firstOrNull { it.id == workspaceId }
 
-    private val fileManager = WorkspaceFileManager()
     private val scope = CoroutineScope(Dispatchers.Main + SupervisorJob())
 
     /**
@@ -382,7 +386,13 @@ class WorkspaceManager {
     /**
      * Save current workspace to disk
      */
-    fun saveCurrentWorkspace(name: String? = null): LayoutWorkspace? {
+    fun saveCurrentWorkspace(name: String? = null): LayoutWorkspace? = saveCurrentWorkspace(name, onSaved = {})
+
+    internal fun saveCurrentWorkspace(
+        name: String?,
+        onSaved: (LayoutWorkspace) -> Unit,
+        onFailed: (String) -> Unit = {},
+    ): LayoutWorkspace? {
         val current = _currentWorkspace.value ?: return null
         val now = Clock.System.now().toEpochMilliseconds()
         val savedWorkspace =
@@ -442,6 +452,17 @@ class WorkspaceManager {
 
                 _workspaces.value = workspaces
                 _currentWorkspace.value = savedWorkspace
+                onSaved(savedWorkspace)
+            } else {
+                // `fileManager` already logged the write error; the caller must still hear the
+                // save FAILED, because the unsaved mark is derived from the list above - without
+                // a message the user gets a Space button that stays lit and no explanation.
+                logger.warn(
+                    LogCategory.WORKSPACE,
+                    "Space save did not land on disk; reporting the failure to the caller",
+                    mapOf("workspace" to savedWorkspace.name, "id" to savedWorkspace.id),
+                )
+                onFailed(savedWorkspace.name)
             }
         }
 

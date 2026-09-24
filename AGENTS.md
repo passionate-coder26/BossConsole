@@ -1746,6 +1746,21 @@ button beside it while there is something to save. It presses
 `MenuActionsHandler.triggerSaveWorkspace(windowId)`, which is the File menu's own Save Space, so
 there is one save path rather than two.
 
+- **Window-local identity, success-only rebind.** Both window entry points resolve the Space
+  identity from the invoking window's `SplitViewState.currentWorkspaceId`
+  (`spaceSnapshotForSave`), never from the process-global `WorkspaceManager.currentWorkspace`,
+  and rebind that id only from the manager's success callback after the bytes have landed. The
+  File-menu/bar path updates the current Space in place; presses received during an in-flight
+  write are coalesced into one follow-up save using the latest layout, provided the same window
+  state is still registered when the first write settles. The `WorkspaceButton` "Save Space..."
+  dialog is a second entry point with different semantics - a named save that mints a new Space
+  and then rebinds the same window. An overlapping named-save submission is ignored rather than
+  replayed, because replaying it could mint a second Space with a numbered name. In both paths,
+  success, failure, callback exceptions and window deregistration must release the in-flight
+  latch. The plugin's `WorkspaceDataProvider` save still resolves identity from the
+  process-global value (the provider carries no window id) and rebinds no window; that is
+  API-shaped, out of scope here, and must not be read as "Save Space is window-local" covering it.
+
 - **The Space button takes the Row's WEIGHT and the save button does not.** A `Row` measures its
   unweighted children first, so the save button's 24dp is taken out before the 130dp label gets
   anything. The other way round is the failure `HostActionsFlowRow` measured: a `Row` too narrow
