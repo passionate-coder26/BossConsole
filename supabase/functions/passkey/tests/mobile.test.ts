@@ -473,7 +473,7 @@ Deno.test("generateMobileAuthenticationPage - should return credential metadata"
   }
 })
 
-Deno.test("GET /register/mobile - a request-supplied rpName cannot spoof the relying party name", async () => {
+Deno.test("GET /register/mobile/v2 - a request-supplied rpName cannot spoof the relying party name", async () => {
   const mockClient = createMockSupabaseClient()
 
   mockClient.mockResponse('passkey_challenges', {
@@ -499,7 +499,7 @@ Deno.test("GET /register/mobile - a request-supplied rpName cannot spoof the rel
   app.route("/", mobile)
 
   const response = await app.request(
-    "/register/mobile?challenge=mock-challenge-base64&email=test@example.com" +
+    "/register/mobile/v2?challenge=mock-challenge-base64&email=test@example.com" +
     "&sessionId=session-123&rpId=api.risaboss.com&rpName=Microsoft%20Security"
   )
 
